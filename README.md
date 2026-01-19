@@ -336,11 +336,17 @@ cargo watch -x test
 
 ## 📚 Documentation
 
-- [Architecture Overview](docs/architecture.md)
-- [API Documentation](docs/api.md)
-- [Plugin Development](docs/plugins.md)
-- [Configuration Guide](docs/configuration.md)
-- [Migration Guide](docs/migration.md)
+### Specifications
+
+Detailed design specifications are available in the `/spec` directory:
+
+- [Specifications Index](spec/README.md)
+- [Architecture Specification](spec/01-architecture.md)
+- [Domain Model Specification](spec/02-domain-model.md)
+- [API Specification](spec/03-api-specification.md)
+- [Configuration Specification](spec/04-configuration.md)
+- [Events Specification](spec/05-events.md)
+- [Packages Specification](spec/06-packages.md) - Detailed descriptions of Rust packages used
 
 ## 🗺️ Roadmap
 
