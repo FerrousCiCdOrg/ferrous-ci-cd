@@ -69,7 +69,7 @@ opentelemetry-jaeger = "0.22"
 num_cpus = "1.16"
 
 [dev-dependencies]
-criterion = "0.7"
+criterion = "0.8"
 proptest = "1.9"
 quickcheck = "1.0"
 quickcheck_macros = "1.0"
