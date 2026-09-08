@@ -1,0 +1,41 @@
+# The same pipeline as examples/pipeline.yaml, in TOML.
+#
+#   ferrous-ci-cd pipeline validate examples/pipeline.toml
+
+version = "1.0"
+
+[environment]
+CARGO_TERM_COLOR = "always"
+
+[[triggers]]
+type = "Push"
+branches = ["main"]
+
+[[triggers]]
+type = "PullRequest"
+branches = ["main"]
+
+[[stages]]
+name = "build"
+
+[[stages.jobs]]
+name = "compile"
+image = "rust:1.75"
+commands = ["cargo build --all-targets --locked"]
+timeout = 1800
+
+[[stages]]
+name = "verify"
+parallel = true
+
+[[stages.jobs]]
+name = "unit-test"
+image = "rust:1.75"
+commands = ["cargo test --all-targets"]
+needs = ["compile"]
+
+[[stages.jobs]]
+name = "clippy"
+image = "rust:1.75"
+commands = ["cargo clippy --all-targets -- -D warnings"]
+needs = ["compile"]
