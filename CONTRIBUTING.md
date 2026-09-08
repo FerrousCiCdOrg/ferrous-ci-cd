@@ -48,7 +48,7 @@ This project adheres to a code of conduct. By participating, you are expected to
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ferrous-ci-cd.git
+git clone https://github.com/FerrousCiCdOrg/ferrous-ci-cd.git
 cd ferrous-ci-cd
 
 # Install development dependencies

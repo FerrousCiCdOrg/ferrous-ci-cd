@@ -1,10 +1,10 @@
 # Ferrous CI/CD 🦀🚀
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/yourusername/ferrous-ci-cd/ci.yml?branch=main)](https://github.com/yourusername/ferrous-ci-cd/actions)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/FerrousCiCdOrg/ferrous-ci-cd/ci.yml?branch=main)](https://github.com/FerrousCiCdOrg/ferrous-ci-cd/actions)
 [![Crates.io](https://img.shields.io/crates/v/ferrous-ci-cd.svg)](https://crates.io/crates/ferrous-ci-cd)
 [![Documentation](https://docs.rs/ferrous-ci-cd/badge.svg)](https://docs.rs/ferrous-ci-cd)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
-[![codecov](https://codecov.io/gh/yourusername/ferrous-ci-cd/branch/main/graph/badge.svg)](https://codecov.io/gh/yourusername/ferrous-ci-cd)
+[![codecov](https://codecov.io/gh/FerrousCiCdOrg/ferrous-ci-cd/branch/main/graph/badge.svg)](https://codecov.io/gh/FerrousCiCdOrg/ferrous-ci-cd)
 
 A modern, high-performance CI/CD system built with Rust, inspired by Jenkins but designed for the cloud-native era.
 
@@ -45,7 +45,7 @@ A modern, high-performance CI/CD system built with Rust, inspired by Jenkins but
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ferrous-ci-cd.git
+git clone https://github.com/FerrousCiCdOrg/ferrous-ci-cd.git
 cd ferrous-ci-cd
 
 # Build the project
@@ -376,8 +376,8 @@ at your option.
 
 ## 📧 Contact
 
-- **Issue Tracker**: [GitHub Issues](https://github.com/yourusername/ferrous-ci-cd/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/ferrous-ci-cd/discussions)
+- **Issue Tracker**: [GitHub Issues](https://github.com/FerrousCiCdOrg/ferrous-ci-cd/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/FerrousCiCdOrg/ferrous-ci-cd/discussions)
 - **Discord**: [Join our community](https://discord.gg/ferrous-ci-cd)
 
 ---

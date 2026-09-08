@@ -15,3 +15,5 @@ backup/
 dist/
 # Cargo
 /target/
+# Claude Code worktrees
+.claude/.worktrees/
