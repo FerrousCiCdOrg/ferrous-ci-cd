@@ -20,19 +20,19 @@ pub struct PipelineConfig {
     pub version: String,
     
     /// Pipeline stages
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<Stage>,
     
     /// Pipeline triggers
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<Trigger>,
     
     /// Global environment variables
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub environment: HashMap<String, String>,
     
     /// Notification settings
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notifications: Option<NotificationConfig>,
 }
 
@@ -44,7 +44,7 @@ pub struct Stage {
     pub name: String,
     
     /// Jobs in this stage
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<Job>,
     
     /// Whether jobs in this stage can run in parallel
@@ -52,7 +52,7 @@ pub struct Stage {
     pub parallel: bool,
     
     /// Conditions for running this stage
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<WhenCondition>,
 }
 
@@ -64,35 +64,35 @@ pub struct Job {
     pub name: String,
     
     /// Docker image to use
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     
     /// Commands to execute
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
     
     /// Environment variables
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub environment: HashMap<String, String>,
     
     /// Working directory
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<String>,
     
     /// Job timeout in seconds
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
     
     /// Number of retry attempts
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<u32>,
     
     /// Artifacts to save
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifacts: Option<ArtifactConfig>,
     
     /// Cache configuration
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<CacheConfig>,
     
     /// Dependencies on other jobs, referenced by job name
@@ -100,11 +100,11 @@ pub struct Job {
     /// Job names form a single pipeline-wide namespace, so a job may depend on
     /// a job declared in an earlier stage. [`PipelineConfig::validate`] rejects
     /// references that cannot be resolved.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub needs: Vec<String>,
     
     /// Conditions for running this job
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<WhenCondition>,
 }
 
@@ -141,15 +141,15 @@ pub enum Trigger {
 #[serde(deny_unknown_fields)]
 pub struct WhenCondition {
     /// Branch condition
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     
     /// Event type condition
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
     
     /// Status condition
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
 }
 
@@ -161,15 +161,15 @@ pub struct ArtifactConfig {
     pub paths: Vec<String>,
     
     /// Paths to exclude
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude: Vec<String>,
     
     /// Artifact name
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     
     /// Expiration time in days
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expire_in: Option<u32>,
 }
 
@@ -184,7 +184,7 @@ pub struct CacheConfig {
     pub paths: Vec<String>,
     
     /// Cache policy (pull, push, pull-push)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<String>,
 }
 
@@ -193,15 +193,15 @@ pub struct CacheConfig {
 #[serde(deny_unknown_fields)]
 pub struct NotificationConfig {
     /// Email notifications
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<Vec<String>>,
     
     /// Slack notifications
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slack: Option<SlackNotification>,
     
     /// Webhook notifications
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub webhooks: Vec<String>,
 }
 
@@ -223,6 +223,7 @@ pub struct SlackNotification {
 
 impl PipelineConfig {
     /// Create a new pipeline configuration
+    #[must_use]
     pub fn new(stages: Vec<Stage>, triggers: Vec<Trigger>) -> Self {
         Self {
             version: DEFAULT_VERSION.to_string(),
@@ -234,6 +235,12 @@ impl PipelineConfig {
     }
     
     /// Validate the pipeline configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Validation`] if the version is empty, if there
+    /// is no stage or no trigger, if any stage or job is itself invalid, or if
+    /// the job dependency graph does not hold together.
     pub fn validate(&self) -> crate::Result<()> {
         // Validate version
         if self.version.is_empty() {
@@ -452,7 +459,7 @@ fn visit_job<'a>(
     path.push(name);
     
     if let Some(needs) = dependencies.get(name) {
-        for need in needs.iter() {
+        for need in *needs {
             visit_job(need.as_str(), dependencies, visits, path)?;
         }
     }
@@ -465,6 +472,7 @@ fn visit_job<'a>(
 
 impl Stage {
     /// Create a new stage
+    #[must_use]
     pub fn new(name: String, jobs: Vec<Job>) -> Self {
         Self {
             name,
@@ -475,6 +483,11 @@ impl Stage {
     }
     
     /// Validate the stage
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Validation`] if the stage has no name, has no
+    /// jobs, or contains a job that is itself invalid.
     pub fn validate(&self) -> crate::Result<()> {
         if self.name.is_empty() {
             return Err(crate::Error::validation("Stage name cannot be empty"));
@@ -494,6 +507,7 @@ impl Stage {
 
 impl Job {
     /// Create a new job
+    #[must_use]
     pub fn new(name: String) -> Self {
         Self {
             name,
@@ -511,6 +525,11 @@ impl Job {
     }
     
     /// Validate the job
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Validation`] if the job has no name, or has
+    /// neither a command to run nor an image to run it in.
     pub fn validate(&self) -> crate::Result<()> {
         if self.name.is_empty() {
             return Err(crate::Error::validation("Job name cannot be empty"));
