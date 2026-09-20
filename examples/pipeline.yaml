@@ -1,0 +1,48 @@
+# A pipeline definition in YAML.
+#
+# `examples/pipeline.toml` and `examples/pipeline_sdk.rs` describe pipelines the
+# same way in the other two front-ends. All three lower to one PipelineConfig.
+#
+#   ferrous-ci-cd pipeline validate examples/pipeline.yaml
+#   ferrous-ci-cd pipeline emit examples/pipeline.yaml --format json
+
+version: "1.0"
+
+environment:
+  CARGO_TERM_COLOR: always
+
+triggers:
+  - type: Push
+    branches:
+      - main
+  - type: PullRequest
+    branches:
+      - main
+
+stages:
+  - name: build
+    jobs:
+      - name: compile
+        image: "rust:1.75"
+        commands:
+          - cargo build --all-targets --locked
+        timeout: 1800
+
+  - name: verify
+    parallel: true
+    jobs:
+      - name: unit-test
+        image: "rust:1.75"
+        commands:
+          - cargo test --all-targets
+        # `needs` is checked against the jobs that actually exist, so a typo
+        # here is rejected when the definition is loaded, not when it runs.
+        needs:
+          - compile
+
+      - name: clippy
+        image: "rust:1.75"
+        commands:
+          - cargo clippy --all-targets -- -D warnings
+        needs:
+          - compile

@@ -3,6 +3,7 @@
 //! This module contains the heart of the business logic following Domain-Driven Design principles.
 
 pub mod entities;
+pub mod pipeline_dsl;
 pub mod value_objects;
 pub mod repositories;
 pub mod services;

@@ -12,7 +12,7 @@ A modern, high-performance CI/CD system built with Rust, inspired by Jenkins but
 
 - **🚀 High Performance**: Built with Rust for maximum performance and reliability
 - **📦 Container-Native**: First-class Docker and Kubernetes support
-- **🔄 Pipeline as Code**: Define your CI/CD pipelines in YAML or TOML
+- **🔄 Pipeline as Code**: Write pipelines in YAML, TOML, or typed Rust — every notation lowers to one validated representation
 - **🎯 Domain-Driven Design**: Clean architecture following DDD principles
 - **🔌 Extensible**: Plugin system for custom integrations
 - **🔐 Secure**: Built-in authentication and authorization
@@ -107,66 +107,125 @@ agents:
 
 ### Define a Pipeline
 
+A pipeline definition is lowered into one intermediate representation before
+anything acts on it. The notation you write it in is a front-end:
+
+```
+YAML  ─┐
+TOML  ─┼─→  PipelineConfig (IR)  ─→  engine / TUI / web UI
+Rust  ─┘         ^ serde-serializable
+ SDK
+```
+
+Whichever you pick, the same validation runs: `needs` must name a job that
+exists, job names must be unique, dependencies may not form a cycle or point at
+a stage that has not run yet, and a misspelled key is rejected rather than
+ignored.
+
+#### YAML
+
 Create a `.ferrous-ci.yaml` file in your repository:
 
 ```yaml
-name: "My Application Pipeline"
 version: "1.0"
 
-triggers:
-  - push:
-      branches: ["main", "develop"]
-  - pull_request:
-      branches: ["main"]
-  - schedule:
-      cron: "0 0 * * *"
-
 environment:
-  RUST_VERSION: "1.75"
-  NODE_VERSION: "20"
+  CARGO_TERM_COLOR: always
+
+triggers:
+  - type: Push
+    branches: ["main", "develop"]
+  - type: PullRequest
+    branches: ["main"]
+  - type: Schedule
+    cron: "0 0 * * *"
 
 stages:
   - name: build
-    parallel:
-      - name: rust-build
+    jobs:
+      - name: compile
         image: rust:1.75
         commands:
-          - cargo build --release
-          - cargo test
+          - cargo build --release --locked
         artifacts:
           paths:
-            - target/release/*
-            
-      - name: frontend-build
-        image: node:20
-        commands:
-          - npm ci
-          - npm run build
-          - npm test
-        artifacts:
-          paths:
-            - dist/*
+            - "target/release/*"
 
-  - name: test
-    needs: [build]
-    matrix:
-      os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - name: integration-tests
+  - name: verify
+    parallel: true
+    jobs:
+      - name: unit-test
         image: rust:1.75
         commands:
-          - cargo test --test integration
+          - cargo test --all-targets
+        needs: ["compile"]
+
+      - name: clippy
+        image: rust:1.75
+        commands:
+          - cargo clippy --all-targets -- -D warnings
+        needs: ["compile"]
 
   - name: deploy
-    needs: [test]
     when:
       branch: main
       event: push
-    steps:
+    jobs:
       - name: deploy-production
         commands:
           - ./scripts/deploy.sh production
+        needs: ["unit-test", "clippy"]
 ```
+
+TOML works the same way; see [`examples/pipeline.toml`](examples/pipeline.toml).
+
+#### Typed Rust
+
+The IR stores dependencies as strings, because that is what a text file can
+express. The Rust front-end never asks you for one — `needs` takes the job
+itself, so a misspelled dependency is a compile error rather than a build that
+fails halfway through:
+
+```rust
+use ferrous_ci_cd::domain::pipeline_dsl::{job, pipeline, stage};
+use ferrous_ci_cd::domain::value_objects::pipeline_config::Trigger;
+
+let compile = job("compile").image("rust:1.75").run("cargo build --locked");
+let unit = job("unit-test").run("cargo test").needs(&compile);
+let clippy = job("clippy").run("cargo clippy -- -D warnings").needs(&compile);
+
+let config = pipeline()
+    .env("CARGO_TERM_COLOR", "always")
+    .on(Trigger::push(["main"]))
+    .stage(stage("build").job(compile))
+    .stage(stage("verify").parallel().job(unit).job(clippy))
+    .build()?;
+```
+
+A stage with no jobs and a pipeline with no stages do not compile either. The
+rules the types cannot express — a job needs a command or an image, names must
+be unique, the dependency graph must hold together — run in `build()`, the same
+check the text front-ends run.
+
+The server never builds or runs this. Emit the representation and commit it:
+
+```bash
+cargo run --example pipeline_sdk > .ferrous/pipeline.json
+ferrous-ci-cd pipeline validate .ferrous/pipeline.json
+```
+
+#### Checking a definition
+
+```bash
+# Parse, validate, and report what the pipeline contains
+ferrous-ci-cd pipeline validate examples/pipeline.yaml
+
+# Print the canonical representation (also converts between notations)
+ferrous-ci-cd pipeline emit examples/pipeline.toml --format yaml
+```
+
+See [the pipeline definition specification](spec/07-pipeline-definition.md) for
+the full schema and validation rules.
 
 ### CLI Usage
 
@@ -347,6 +406,7 @@ Detailed design specifications are available in the `/spec` directory:
 - [Configuration Specification](spec/04-configuration.md)
 - [Events Specification](spec/05-events.md)
 - [Packages Specification](spec/06-packages.md) - Detailed descriptions of Rust packages used
+- [Pipeline Definition Specification](spec/07-pipeline-definition.md) - The pipeline representation, its front-ends, and validation rules
 
 ## 🗺️ Roadmap
 

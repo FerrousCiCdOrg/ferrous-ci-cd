@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use ferrous_ci_cd::infrastructure::pipeline_source::{self, PipelineFormat};
 use ferrous_ci_cd::{init, Config};
 use std::path::PathBuf;
 use tracing::info;
@@ -62,6 +63,54 @@ enum Commands {
         #[command(subcommand)]
         command: BuildCommands,
     },
+    
+    /// Inspect pipeline definitions
+    Pipeline {
+        #[command(subcommand)]
+        command: PipelineCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PipelineCommands {
+    /// Check that a pipeline definition parses and holds together
+    Validate {
+        /// Pipeline definition file (.yaml, .yml, .toml or .json)
+        file: PathBuf,
+    },
+    
+    /// Print a pipeline definition in the canonical intermediate representation
+    ///
+    /// Every front-end lowers to the same representation, so this is how a
+    /// definition written in one notation becomes a definition in another --
+    /// and how a generated definition becomes a static file the server can read
+    /// without running anything to produce it.
+    Emit {
+        /// Pipeline definition file (.yaml, .yml, .toml or .json)
+        file: PathBuf,
+        
+        /// Output format
+        #[arg(long, value_enum, default_value_t = EmitFormat::Json)]
+        format: EmitFormat,
+    },
+}
+
+/// The formats the intermediate representation can be written back out in
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum EmitFormat {
+    /// JSON, the canonical encoding for generated definitions
+    Json,
+    /// YAML
+    Yaml,
+}
+
+impl From<EmitFormat> for PipelineFormat {
+    fn from(format: EmitFormat) -> Self {
+        match format {
+            EmitFormat::Json => PipelineFormat::Json,
+            EmitFormat::Yaml => PipelineFormat::Yaml,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -153,9 +202,6 @@ async fn main() -> Result<()> {
     // Initialize the system
     init().await?;
     
-    // Load configuration
-    let config = Config::from_file(&cli.config)?;
-    
     // Set verbosity
     let log_level = match cli.verbose {
         0 => "info",
@@ -165,8 +211,18 @@ async fn main() -> Result<()> {
     
     info!("Starting Ferrous CI/CD with log level: {}", log_level);
     
+    // A pipeline definition is an ordinary file. Reading one needs no server
+    // configuration, so this subcommand is dispatched before the config is loaded.
+    let command = match cli.command {
+        Some(Commands::Pipeline { command }) => return handle_pipeline_command(&command),
+        other => other,
+    };
+    
+    // Load configuration
+    let config = Config::from_file(&cli.config)?;
+    
     // Execute command
-    match cli.command {
+    match command {
         None | Some(Commands::Server { .. }) => {
             run_server(config).await?;
         }
@@ -181,6 +237,31 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Build { command }) => {
             handle_build_command(config, command).await?;
+        }
+        Some(Commands::Pipeline { .. }) => unreachable!("dispatched before the config is loaded"),
+    }
+    
+    Ok(())
+}
+
+fn handle_pipeline_command(command: &PipelineCommands) -> Result<()> {
+    match command {
+        PipelineCommands::Validate { file } => {
+            let config = pipeline_source::from_path(file)?;
+            let jobs: usize = config.stages.iter().map(|stage| stage.jobs.len()).sum();
+            
+            println!(
+                "{} is valid: version {}, {} stage(s), {} job(s), {} trigger(s)",
+                file.display(),
+                config.version,
+                config.stages.len(),
+                jobs,
+                config.triggers.len()
+            );
+        }
+        PipelineCommands::Emit { file, format } => {
+            let config = pipeline_source::from_path(file)?;
+            println!("{}", pipeline_source::to_string(&config, (*format).into())?);
         }
     }
     
