@@ -15,3 +15,6 @@ backup/
 dist/
 # Cargo
 /target/
+
+# Dedicated task worktrees
+.claude/.worktrees/

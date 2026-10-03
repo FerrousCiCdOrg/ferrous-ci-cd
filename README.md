@@ -1,5 +1,9 @@
 # Ferrous CI/CD 🦀🚀
 
+<p align="center">
+  <img src="assets/branding/github-avatar.png" alt="Ferrous CI/CD forge and pipeline icon" width="128" height="128">
+</p>
+
 [![Build Status](https://img.shields.io/github/actions/workflow/status/yourusername/ferrous-ci-cd/ci.yml?branch=main)](https://github.com/yourusername/ferrous-ci-cd/actions)
 [![Crates.io](https://img.shields.io/crates/v/ferrous-ci-cd.svg)](https://crates.io/crates/ferrous-ci-cd)
 [![Documentation](https://docs.rs/ferrous-ci-cd/badge.svg)](https://docs.rs/ferrous-ci-cd)
