@@ -124,7 +124,7 @@ jobs:
         run: cargo build --release --all-features
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ferrous-ci-cd-linux
           path: target/release/ferrous-ci-cd
