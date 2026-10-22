@@ -1,7 +1,7 @@
 //! Build DTOs
 
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildDto {
@@ -14,4 +14,3 @@ pub struct BuildDto {
     pub branch: String,
     pub created_at: DateTime<Utc>,
 }
-

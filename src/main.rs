@@ -32,31 +32,31 @@ enum Commands {
         /// Host to bind to
         #[arg(long, default_value = "0.0.0.0")]
         host: String,
-        
+
         /// Port to listen on
         #[arg(long, default_value_t = 8080)]
         port: u16,
     },
-    
+
     /// Run database migrations
     Migrate {
         /// Run migrations up to this version
         #[arg(long)]
         target: Option<String>,
     },
-    
+
     /// Manage CI/CD agents
     Agent {
         #[command(subcommand)]
         command: AgentCommands,
     },
-    
+
     /// Manage projects
     Project {
         #[command(subcommand)]
         command: ProjectCommands,
     },
-    
+
     /// Manage builds
     Build {
         #[command(subcommand)]
@@ -71,15 +71,15 @@ enum AgentCommands {
         /// Agent name
         #[arg(long)]
         name: String,
-        
+
         /// Labels for the agent
         #[arg(long)]
         labels: Vec<String>,
     },
-    
+
     /// List all agents
     List,
-    
+
     /// Register a new agent
     Register {
         /// Agent name
@@ -94,15 +94,15 @@ enum ProjectCommands {
         /// Project name
         #[arg(long)]
         name: String,
-        
+
         /// Repository URL
         #[arg(long)]
         repo: String,
     },
-    
+
     /// List all projects
     List,
-    
+
     /// Delete a project
     Delete {
         /// Project name
@@ -117,28 +117,28 @@ enum BuildCommands {
         /// Project name
         #[arg(long)]
         project: String,
-        
+
         /// Branch to build
         #[arg(long)]
         branch: String,
     },
-    
+
     /// List builds
     List {
         /// Filter by project
         #[arg(long)]
         project: Option<String>,
-        
+
         /// Filter by status
         #[arg(long)]
         status: Option<String>,
     },
-    
+
     /// Get build logs
     Logs {
         /// Build ID
         build_id: String,
-        
+
         /// Follow logs in real-time
         #[arg(short, long)]
         follow: bool,
@@ -149,22 +149,22 @@ enum BuildCommands {
 async fn main() -> Result<()> {
     // Parse command line arguments
     let cli = Cli::parse();
-    
+
     // Initialize the system
     init().await?;
-    
+
     // Load configuration
     let config = Config::from_file(&cli.config)?;
-    
+
     // Set verbosity
     let log_level = match cli.verbose {
         0 => "info",
         1 => "debug",
         _ => "trace",
     };
-    
+
     info!("Starting Ferrous CI/CD with log level: {}", log_level);
-    
+
     // Execute command
     match cli.command {
         None | Some(Commands::Server { .. }) => {
@@ -183,32 +183,31 @@ async fn main() -> Result<()> {
             handle_build_command(config, command).await?;
         }
     }
-    
+
     Ok(())
 }
 
 async fn run_server(config: Config) -> Result<()> {
     let host = config.server.host.clone();
     let port = config.server.port;
-    
+
     info!("Starting Ferrous CI/CD server on {}:{}", host, port);
-    
+
     // Create application instance
     let app = ferrous_ci_cd::application::Application::new(config).await?;
-    
+
     // Create router
     let router = ferrous_ci_cd::presentation::api::create_server(app).await?;
-    
+
     // Create listener
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    
+
     info!("Server listening on {}", addr);
-    
+
     // Start server
-    axum::serve(listener, router)
-        .await?;
-    
+    axum::serve(listener, router).await?;
+
     info!("Server shut down gracefully");
     Ok(())
 }
@@ -259,11 +258,17 @@ async fn handle_project_command(_config: Config, command: ProjectCommands) -> Re
 async fn handle_build_command(_config: Config, command: BuildCommands) -> Result<()> {
     match command {
         BuildCommands::Trigger { project, branch } => {
-            info!("Triggering build for project '{}' on branch '{}'", project, branch);
+            info!(
+                "Triggering build for project '{}' on branch '{}'",
+                project, branch
+            );
             // TODO: Implement build trigger logic
         }
         BuildCommands::List { project, status } => {
-            info!("Listing builds (project: {:?}, status: {:?})", project, status);
+            info!(
+                "Listing builds (project: {:?}, status: {:?})",
+                project, status
+            );
             // TODO: Implement build list logic
         }
         BuildCommands::Logs { build_id, follow } => {

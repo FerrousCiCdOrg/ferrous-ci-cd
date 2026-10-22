@@ -3,9 +3,7 @@
 mod common;
 
 use common::TestFixture;
-use ferrous_ci_cd::domain::value_objects::{
-    pipeline_config::{PipelineConfig, Stage, Job, Trigger},
-};
+use ferrous_ci_cd::domain::value_objects::pipeline_config::{Job, PipelineConfig, Stage, Trigger};
 
 #[tokio::test]
 async fn test_create_and_retrieve_pipeline() {
@@ -46,11 +44,7 @@ async fn test_enable_disable_pipeline() {
 
     let pipeline = fixture
         .pipeline_service
-        .create_pipeline(
-            project.id().clone(),
-            "test-pipeline".to_string(),
-            config,
-        )
+        .create_pipeline(project.id().clone(), "test-pipeline".to_string(), config)
         .await
         .expect("Failed to create pipeline");
 
@@ -93,23 +87,16 @@ async fn test_update_pipeline_config() {
 
     let pipeline = fixture
         .pipeline_service
-        .create_pipeline(
-            project.id().clone(),
-            "test-pipeline".to_string(),
-            config,
-        )
+        .create_pipeline(project.id().clone(), "test-pipeline".to_string(), config)
         .await
         .expect("Failed to create pipeline");
 
     // Create new config
     let mut new_job = Job::new("deploy".to_string());
     new_job.add_command("./deploy.sh".to_string());
-    
+
     let new_stage = Stage::new("deploy".to_string(), vec![new_job]);
-    let new_config = PipelineConfig::new(
-        vec![new_stage],
-        vec![Trigger::Manual],
-    );
+    let new_config = PipelineConfig::new(vec![new_stage], vec![Trigger::Manual]);
 
     // Update config
     fixture
@@ -176,4 +163,3 @@ async fn test_pipeline_validation() {
 
     assert!(result.is_err(), "Should fail with invalid config");
 }
-

@@ -26,22 +26,22 @@ impl BuildStatus {
             BuildStatus::Success | BuildStatus::Failed | BuildStatus::Cancelled
         )
     }
-    
+
     /// Check if the build is in progress
     pub fn is_in_progress(&self) -> bool {
         matches!(self, BuildStatus::Running)
     }
-    
+
     /// Check if the build is successful
     pub fn is_success(&self) -> bool {
         matches!(self, BuildStatus::Success)
     }
-    
+
     /// Check if the build failed
     pub fn is_failed(&self) -> bool {
         matches!(self, BuildStatus::Failed)
     }
-    
+
     /// Get a human-readable description
     pub fn description(&self) -> &str {
         match self {
@@ -52,7 +52,7 @@ impl BuildStatus {
             BuildStatus::Cancelled => "Cancelled",
         }
     }
-    
+
     /// Get the emoji representation
     pub fn emoji(&self) -> &str {
         match self {
@@ -117,4 +117,3 @@ mod tests {
         assert_eq!(BuildStatus::Success.description(), "Completed successfully");
     }
 }
-

@@ -8,16 +8,16 @@
 #![allow(clippy::module_name_repetitions)]
 #![allow(missing_docs)] // TODO: Add comprehensive documentation
 
-pub mod domain;
 pub mod application;
+pub mod config;
+pub mod domain;
+pub mod error;
 pub mod infrastructure;
 pub mod presentation;
-pub mod error;
-pub mod config;
 
 // Re-export commonly used types
-pub use error::{Result, Error};
 pub use config::Config;
+pub use error::{Error, Result};
 
 /// The current version of Ferrous CI/CD
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -35,7 +35,7 @@ pub async fn init() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("ferrous_ci_cd=info".parse().unwrap())
+                .add_directive("ferrous_ci_cd=info".parse().unwrap()),
         )
         .with_target(false)
         .with_thread_ids(true)
@@ -43,7 +43,7 @@ pub async fn init() -> Result<()> {
         .init();
 
     tracing::info!("Initializing Ferrous CI/CD v{}", VERSION);
-    
+
     Ok(())
 }
 

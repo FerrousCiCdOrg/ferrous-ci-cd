@@ -1,7 +1,7 @@
 //! Pipeline DTOs
 
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineDto {
@@ -11,4 +11,3 @@ pub struct PipelineDto {
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
 }
-
