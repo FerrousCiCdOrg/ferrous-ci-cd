@@ -42,7 +42,7 @@ config = "0.15"
 dotenv = "0.15"
 
 # Git integration
-git2 = "0.20"
+git2 = "0.21"
 
 # Authentication
 jsonwebtoken = { version = "10.2", default-features = true }
