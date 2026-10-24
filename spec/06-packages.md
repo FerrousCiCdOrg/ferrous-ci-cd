@@ -10,7 +10,7 @@ This document describes the main Rust packages (crates) used in Ferrous CI/CD. I
 
 #### tokio
 
-**Version**: 1.48  
+**Version**: 1.53.3  
 **Purpose**: Async runtime and I/O processing
 
 Tokio is Rust's async runtime that provides the following features:
@@ -28,7 +28,7 @@ Tokio is Rust's async runtime that provides the following features:
 
 **Configuration**:
 ```toml
-tokio = { version = "1.48", features = ["full"] }
+tokio = { version = "1.53.3", features = ["full"] }
 ```
 
 The `full` feature enables all Tokio functionality.
@@ -353,16 +353,6 @@ tracing-subscriber = {
 **Version**: 0.21  
 **Purpose**: Git repository operations
 
-**Configuration**:
-```toml
-git2 = "0.21"
-```
-
-**Note**: git2 0.21 enables no transport features by default, so the current
-build has no HTTPS or SSH support (and does not pull in `openssl-sys` or
-`libssh2-sys`). Enable the `https` feature (and `ssh` if SSH remotes are
-needed) when clone/fetch is implemented.
-
 **Features**:
 - リポジトリのクローン
 - コミット情報の取得
@@ -373,6 +363,16 @@ needed) when clone/fetch is implemented.
 - プロジェクトリポジトリのクローン
 - ビルド時のコード取得
 - コミット情報の取得
+
+**Configuration**:
+```toml
+git2 = "0.21"
+```
+
+git2 0.21 enables no transport features by default, so the current build has
+no HTTPS or SSH support (and does not pull in `openssl-sys` or `libssh2-sys`).
+Enable the `https` feature (and `ssh` if SSH remotes are needed) when
+clone/fetch is implemented.
 
 ## Authentication & Security
 
