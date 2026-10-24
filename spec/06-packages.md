@@ -350,8 +350,18 @@ tracing-subscriber = {
 
 ### git2
 
-**Version**: 0.20  
+**Version**: 0.21  
 **Purpose**: Git repository operations
+
+**Configuration**:
+```toml
+git2 = "0.21"
+```
+
+**Note**: git2 0.21 enables no transport features by default, so the current
+build has no HTTPS or SSH support (and does not pull in `openssl-sys` or
+`libssh2-sys`). Enable the `https` feature (and `ssh` if SSH remotes are
+needed) when clone/fetch is implemented.
 
 **Features**:
 - リポジトリのクローン
