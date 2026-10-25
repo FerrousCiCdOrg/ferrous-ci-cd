@@ -13,22 +13,22 @@ impl WorkspaceId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
-    
+
     /// Create from a UUID
     pub fn from_uuid(uuid: Uuid) -> Self {
         Self(uuid)
     }
-    
+
     /// Parse from a string
     pub fn parse(s: &str) -> Result<Self, uuid::Error> {
         Ok(Self(Uuid::parse_str(s)?))
     }
-    
+
     /// Get the inner UUID
     pub fn as_uuid(&self) -> &Uuid {
         &self.0
     }
-    
+
     /// Convert to string
     pub fn to_string(&self) -> String {
         self.0.to_string()
@@ -67,7 +67,7 @@ mod tests {
     fn test_workspace_id_creation() {
         let id1 = WorkspaceId::new();
         let id2 = WorkspaceId::new();
-        
+
         assert_ne!(id1, id2);
     }
 
@@ -75,9 +75,8 @@ mod tests {
     fn test_workspace_id_parse() {
         let id = WorkspaceId::new();
         let id_str = id.to_string();
-        
+
         let parsed = WorkspaceId::parse(&id_str).unwrap();
         assert_eq!(id, parsed);
     }
 }
-

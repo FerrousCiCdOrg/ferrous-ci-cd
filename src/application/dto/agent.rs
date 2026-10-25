@@ -1,7 +1,7 @@
 //! Agent DTOs
 
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDto {
@@ -10,4 +10,3 @@ pub struct AgentDto {
     pub status: String,
     pub created_at: DateTime<Utc>,
 }
-

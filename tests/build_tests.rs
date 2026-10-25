@@ -4,8 +4,7 @@ mod common;
 
 use common::TestFixture;
 use ferrous_ci_cd::domain::{
-    entities::build::BuildTrigger,
-    value_objects::build_status::BuildStatus,
+    entities::build::BuildTrigger, value_objects::build_status::BuildStatus,
 };
 
 #[tokio::test]
@@ -17,11 +16,7 @@ async fn test_complete_build_lifecycle() {
     // Create pipeline
     let pipeline = fixture
         .pipeline_service
-        .create_pipeline(
-            project.id().clone(),
-            "test-pipeline".to_string(),
-            config,
-        )
+        .create_pipeline(project.id().clone(), "test-pipeline".to_string(), config)
         .await
         .expect("Failed to create pipeline");
 
@@ -97,11 +92,7 @@ async fn test_build_failure() {
 
     let pipeline = fixture
         .pipeline_service
-        .create_pipeline(
-            project.id().clone(),
-            "test-pipeline".to_string(),
-            config,
-        )
+        .create_pipeline(project.id().clone(), "test-pipeline".to_string(), config)
         .await
         .expect("Failed to create pipeline");
 
@@ -160,11 +151,7 @@ async fn test_build_cancellation() {
 
     let pipeline = fixture
         .pipeline_service
-        .create_pipeline(
-            project.id().clone(),
-            "test-pipeline".to_string(),
-            config,
-        )
+        .create_pipeline(project.id().clone(), "test-pipeline".to_string(), config)
         .await
         .expect("Failed to create pipeline");
 
@@ -206,11 +193,7 @@ async fn test_multiple_builds_same_pipeline() {
 
     let pipeline = fixture
         .pipeline_service
-        .create_pipeline(
-            project.id().clone(),
-            "test-pipeline".to_string(),
-            config,
-        )
+        .create_pipeline(project.id().clone(), "test-pipeline".to_string(), config)
         .await
         .expect("Failed to create pipeline");
 
@@ -251,11 +234,7 @@ async fn test_concurrent_builds() {
 
     let pipeline = fixture
         .pipeline_service
-        .create_pipeline(
-            project.id().clone(),
-            "test-pipeline".to_string(),
-            config,
-        )
+        .create_pipeline(project.id().clone(), "test-pipeline".to_string(), config)
         .await
         .expect("Failed to create pipeline");
 
@@ -332,4 +311,3 @@ async fn test_concurrent_builds() {
 
     assert_eq!(running_builds.len(), 3);
 }
-

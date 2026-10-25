@@ -1,18 +1,14 @@
 //! Domain events for the CI/CD system
 
-use crate::domain::value_objects::{
-    build_id::BuildId,
-    pipeline_id::PipelineId,
-    project_id::ProjectId,
-    agent_id::AgentId,
-    user_id::UserId,
-    build_status::BuildStatus,
-};
 use crate::domain::entities::user::UserRole;
+use crate::domain::value_objects::{
+    agent_id::AgentId, build_id::BuildId, build_status::BuildStatus, pipeline_id::PipelineId,
+    project_id::ProjectId, user_id::UserId,
+};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use async_trait::async_trait;
 
 /// Domain event
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -40,7 +36,7 @@ pub enum DomainEvent {
         build_id: BuildId,
         cancelled_at: DateTime<Utc>,
     },
-    
+
     // Pipeline events
     PipelineCreated {
         pipeline_id: PipelineId,
@@ -62,7 +58,7 @@ pub enum DomainEvent {
         pipeline_id: PipelineId,
         disabled_at: DateTime<Utc>,
     },
-    
+
     // Project events
     ProjectCreated {
         project_id: ProjectId,
@@ -70,7 +66,7 @@ pub enum DomainEvent {
         repository_url: String,
         created_at: DateTime<Utc>,
     },
-    
+
     // Agent events
     AgentRegistered {
         agent_id: AgentId,
@@ -81,7 +77,7 @@ pub enum DomainEvent {
         agent_id: AgentId,
         disconnected_at: DateTime<Utc>,
     },
-    
+
     // User events
     UserCreated {
         user_id: UserId,
@@ -120,7 +116,7 @@ impl DomainEvent {
             DomainEvent::UserDeactivated { .. } => "user.deactivated",
         }
     }
-    
+
     /// Get the timestamp of the event
     pub fn timestamp(&self) -> DateTime<Utc> {
         match self {
@@ -135,7 +131,9 @@ impl DomainEvent {
             DomainEvent::PipelineConfigUpdated { updated_at, .. } => *updated_at,
             DomainEvent::PipelineEnabled { enabled_at, .. } => *enabled_at,
             DomainEvent::PipelineDisabled { disabled_at, .. } => *disabled_at,
-            DomainEvent::AgentDisconnected { disconnected_at, .. } => *disconnected_at,
+            DomainEvent::AgentDisconnected {
+                disconnected_at, ..
+            } => *disconnected_at,
             DomainEvent::UserPasswordChanged { changed_at, .. } => *changed_at,
             DomainEvent::UserDeactivated { deactivated_at, .. } => *deactivated_at,
         }
@@ -147,7 +145,7 @@ impl DomainEvent {
 pub trait EventPublisher: Send + Sync {
     /// Publish a domain event
     async fn publish(&self, event: DomainEvent) -> crate::Result<()>;
-    
+
     /// Publish multiple domain events
     async fn publish_batch(&self, events: Vec<DomainEvent>) -> crate::Result<()>;
 }
@@ -157,7 +155,7 @@ pub trait EventPublisher: Send + Sync {
 pub trait EventHandler: Send + Sync {
     /// Handle a domain event
     async fn handle(&self, event: &DomainEvent) -> crate::Result<()>;
-    
+
     /// Get the events this handler is interested in
     fn interested_in(&self) -> Vec<&str>;
 }
@@ -174,12 +172,12 @@ impl InMemoryEventPublisher {
             events: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         }
     }
-    
+
     /// Get all published events
     pub async fn get_events(&self) -> Vec<DomainEvent> {
         self.events.lock().await.clone()
     }
-    
+
     /// Clear all events
     pub async fn clear(&self) {
         self.events.lock().await.clear();
@@ -198,7 +196,7 @@ impl EventPublisher for InMemoryEventPublisher {
         self.events.lock().await.push(event);
         Ok(())
     }
-    
+
     async fn publish_batch(&self, events: Vec<DomainEvent>) -> crate::Result<()> {
         self.events.lock().await.extend(events);
         Ok(())
@@ -218,7 +216,7 @@ mod tests {
             number: 1,
             created_at: Utc::now(),
         };
-        
+
         assert_eq!(event.event_type(), "build.created");
     }
 
@@ -230,14 +228,14 @@ mod tests {
             agent_id: AgentId::new(),
             started_at: now,
         };
-        
+
         assert_eq!(event.timestamp(), now);
     }
 
     #[tokio::test]
     async fn test_in_memory_publisher() {
         let publisher = InMemoryEventPublisher::new();
-        
+
         let event = DomainEvent::BuildCreated {
             build_id: BuildId::new(),
             pipeline_id: PipelineId::new(),
@@ -245,9 +243,9 @@ mod tests {
             number: 1,
             created_at: Utc::now(),
         };
-        
+
         publisher.publish(event.clone()).await.unwrap();
-        
+
         let events = publisher.get_events().await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type(), "build.created");
@@ -256,7 +254,7 @@ mod tests {
     #[tokio::test]
     async fn test_batch_publish() {
         let publisher = InMemoryEventPublisher::new();
-        
+
         let events = vec![
             DomainEvent::BuildCreated {
                 build_id: BuildId::new(),
@@ -271,11 +269,10 @@ mod tests {
                 started_at: Utc::now(),
             },
         ];
-        
+
         publisher.publish_batch(events).await.unwrap();
-        
+
         let stored_events = publisher.get_events().await;
         assert_eq!(stored_events.len(), 2);
     }
 }
-

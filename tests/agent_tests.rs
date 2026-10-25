@@ -200,7 +200,7 @@ async fn test_agent_cleanup_mechanism() {
 
     // Agent was just registered, so it should not be cleaned up
     assert_eq!(cleaned, 0);
-    
+
     // Verify agent is still available
     let available_agents = fixture
         .agent_service
@@ -243,4 +243,3 @@ async fn test_duplicate_agent_registration() {
 
     assert!(result.is_err(), "Should fail with duplicate agent name");
 }
-

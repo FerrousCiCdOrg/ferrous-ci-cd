@@ -1,30 +1,19 @@
 //! Common test utilities
 
 use ferrous_ci_cd::{
-    Config,
     domain::{
-        entities::{
-            agent::AgentPlatform,
-            project::Project,
-        },
-        value_objects::pipeline_config::{PipelineConfig, Stage, Job, Trigger},
+        entities::{agent::AgentPlatform, project::Project},
         events::InMemoryEventPublisher,
         repositories::{
-            pipeline::PipelineRepository,
-            build::BuildRepository,
-            agent::AgentRepository,
+            agent::AgentRepository, build::BuildRepository, pipeline::PipelineRepository,
         },
-        services::{
-            pipeline::PipelineService,
-            build::BuildService,
-            agent::AgentService,
-        },
+        services::{agent::AgentService, build::BuildService, pipeline::PipelineService},
+        value_objects::pipeline_config::{Job, PipelineConfig, Stage, Trigger},
     },
     infrastructure::repositories::in_memory::{
-        InMemoryPipelineRepository,
-        InMemoryBuildRepository,
-        InMemoryAgentRepository,
+        InMemoryAgentRepository, InMemoryBuildRepository, InMemoryPipelineRepository,
     },
+    Config,
 };
 use std::sync::Arc;
 
@@ -44,7 +33,8 @@ impl TestFixture {
     /// Create a new test fixture
     pub async fn new() -> Self {
         let event_publisher = Arc::new(InMemoryEventPublisher::new());
-        let pipeline_repo: Arc<dyn PipelineRepository> = Arc::new(InMemoryPipelineRepository::new());
+        let pipeline_repo: Arc<dyn PipelineRepository> =
+            Arc::new(InMemoryPipelineRepository::new());
         let build_repo: Arc<dyn BuildRepository> = Arc::new(InMemoryBuildRepository::new());
         let agent_repo: Arc<dyn AgentRepository> = Arc::new(InMemoryAgentRepository::new());
 
@@ -99,7 +89,9 @@ impl TestFixture {
 
         PipelineConfig::new(
             vec![stage],
-            vec![Trigger::Push { branches: vec!["main".to_string()] }],
+            vec![Trigger::Push {
+                branches: vec!["main".to_string()],
+            }],
         )
     }
 
@@ -128,4 +120,3 @@ impl TestFixture {
 pub fn create_test_config() -> Config {
     Config::default()
 }
-

@@ -1,13 +1,11 @@
 //! Pipeline domain service
 
 use crate::domain::entities::pipeline::Pipeline;
-use crate::domain::value_objects::{
-    pipeline_id::PipelineId,
-    project_id::ProjectId,
-    pipeline_config::PipelineConfig,
-};
-use crate::domain::repositories::pipeline::PipelineRepository;
 use crate::domain::events::EventPublisher;
+use crate::domain::repositories::pipeline::PipelineRepository;
+use crate::domain::value_objects::{
+    pipeline_config::PipelineConfig, pipeline_id::PipelineId, project_id::ProjectId,
+};
 use std::sync::Arc;
 
 /// Pipeline service
@@ -27,7 +25,7 @@ impl PipelineService {
             event_publisher,
         }
     }
-    
+
     /// Create a new pipeline
     pub async fn create_pipeline(
         &self,
@@ -37,23 +35,23 @@ impl PipelineService {
     ) -> crate::Result<Pipeline> {
         // Validate configuration
         config.validate()?;
-        
+
         // Create pipeline
         let mut pipeline = Pipeline::new(project_id, name, config);
-        
+
         // Validate pipeline
         pipeline.validate()?;
-        
+
         // Save pipeline
         self.repository.save(&pipeline).await?;
-        
+
         // Publish events
         let events = pipeline.take_events();
         self.event_publisher.publish_batch(events).await?;
-        
+
         Ok(pipeline)
     }
-    
+
     /// Update pipeline configuration
     pub async fn update_config(
         &self,
@@ -62,73 +60,76 @@ impl PipelineService {
     ) -> crate::Result<()> {
         // Validate configuration
         config.validate()?;
-        
+
         // Find pipeline
-        let mut pipeline = self.repository
+        let mut pipeline = self
+            .repository
             .find_by_id(pipeline_id)
             .await?
             .ok_or_else(|| crate::Error::not_found("Pipeline not found"))?;
-        
+
         // Update configuration
         pipeline.update_config(config)?;
-        
+
         // Save pipeline
         self.repository.update(&pipeline).await?;
-        
+
         // Publish events
         let events = pipeline.take_events();
         self.event_publisher.publish_batch(events).await?;
-        
+
         Ok(())
     }
-    
+
     /// Enable a pipeline
     pub async fn enable_pipeline(&self, pipeline_id: &PipelineId) -> crate::Result<()> {
-        let mut pipeline = self.repository
+        let mut pipeline = self
+            .repository
             .find_by_id(pipeline_id)
             .await?
             .ok_or_else(|| crate::Error::not_found("Pipeline not found"))?;
-        
+
         pipeline.enable();
-        
+
         self.repository.update(&pipeline).await?;
-        
+
         let events = pipeline.take_events();
         self.event_publisher.publish_batch(events).await?;
-        
+
         Ok(())
     }
-    
+
     /// Disable a pipeline
     pub async fn disable_pipeline(&self, pipeline_id: &PipelineId) -> crate::Result<()> {
-        let mut pipeline = self.repository
+        let mut pipeline = self
+            .repository
             .find_by_id(pipeline_id)
             .await?
             .ok_or_else(|| crate::Error::not_found("Pipeline not found"))?;
-        
+
         pipeline.disable();
-        
+
         self.repository.update(&pipeline).await?;
-        
+
         let events = pipeline.take_events();
         self.event_publisher.publish_batch(events).await?;
-        
+
         Ok(())
     }
-    
+
     /// Delete a pipeline
     pub async fn delete_pipeline(&self, pipeline_id: &PipelineId) -> crate::Result<()> {
         // Check if pipeline exists
         if !self.repository.exists(pipeline_id).await? {
             return Err(crate::Error::not_found("Pipeline not found"));
         }
-        
+
         // Delete pipeline
         self.repository.delete(pipeline_id).await?;
-        
+
         Ok(())
     }
-    
+
     /// Get a pipeline by ID
     pub async fn get_pipeline(&self, pipeline_id: &PipelineId) -> crate::Result<Pipeline> {
         self.repository
@@ -136,9 +137,12 @@ impl PipelineService {
             .await?
             .ok_or_else(|| crate::Error::not_found("Pipeline not found"))
     }
-    
+
     /// Get all pipelines for a project
-    pub async fn get_project_pipelines(&self, project_id: &ProjectId) -> crate::Result<Vec<Pipeline>> {
+    pub async fn get_project_pipelines(
+        &self,
+        project_id: &ProjectId,
+    ) -> crate::Result<Vec<Pipeline>> {
         self.repository.find_by_project(project_id).await
     }
 }
@@ -147,13 +151,13 @@ impl PipelineService {
 mod tests {
     use super::*;
     use crate::domain::events::InMemoryEventPublisher;
-    use crate::domain::value_objects::pipeline_config::{Stage, Job, Trigger};
-    use mockall::predicate::*;
+    use crate::domain::value_objects::pipeline_config::{Job, Stage, Trigger};
     use mockall::mock;
-    
+    use mockall::predicate::*;
+
     mock! {
         pub PipelineRepo {}
-        
+
         #[async_trait::async_trait]
         impl PipelineRepository for PipelineRepo {
             async fn save(&self, pipeline: &Pipeline) -> crate::Result<()>;
@@ -170,7 +174,7 @@ mod tests {
     fn create_test_config() -> PipelineConfig {
         let mut job = Job::new("test".to_string());
         job.add_command("echo 'test'".to_string());
-        
+
         PipelineConfig::new(
             vec![Stage::new("build".to_string(), vec![job])],
             vec![Trigger::Manual],
@@ -180,26 +184,22 @@ mod tests {
     #[tokio::test]
     async fn test_create_pipeline() {
         let mut mock_repo = MockPipelineRepo::new();
-        mock_repo.expect_save()
-            .times(1)
-            .returning(|_| Ok(()));
-        
+        mock_repo.expect_save().times(1).returning(|_| Ok(()));
+
         let event_publisher = Arc::new(InMemoryEventPublisher::new());
-        let service = PipelineService::new(
-            Arc::new(mock_repo),
-            event_publisher.clone(),
-        );
-        
-        let result = service.create_pipeline(
-            ProjectId::new(),
-            "test-pipeline".to_string(),
-            create_test_config(),
-        ).await;
-        
+        let service = PipelineService::new(Arc::new(mock_repo), event_publisher.clone());
+
+        let result = service
+            .create_pipeline(
+                ProjectId::new(),
+                "test-pipeline".to_string(),
+                create_test_config(),
+            )
+            .await;
+
         assert!(result.is_ok());
-        
+
         let events = event_publisher.get_events().await;
         assert_eq!(events.len(), 1);
     }
 }
-

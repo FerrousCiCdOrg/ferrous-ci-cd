@@ -1,0 +1,13 @@
+# cargo-audit configuration.
+# Every ignored advisory must state why it cannot be fixed and why it does not
+# affect this project. Revisit each entry whenever dependencies change.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 (rsa 0.9.x, Marvin attack timing side channel).
+    # No patched rsa release exists. rsa is only present in Cargo.lock through
+    # sqlx-mysql, an optional sqlx backend that this project does not enable
+    # (sqlx is built with the "postgres" and "sqlite" features only), so it is
+    # never compiled: `cargo tree -i rsa --target all -e all` prints nothing.
+    "RUSTSEC-2023-0071",
+]

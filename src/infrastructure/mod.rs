@@ -1,7 +1,6 @@
 //! Infrastructure layer - External implementations
 
-pub mod repositories;
-pub mod git;
-pub mod storage;
 pub mod database;
-
+pub mod git;
+pub mod repositories;
+pub mod storage;
