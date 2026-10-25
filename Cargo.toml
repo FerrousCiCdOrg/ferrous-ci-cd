@@ -45,7 +45,8 @@ dotenv = "0.15"
 git2 = "0.21"
 
 # Authentication
-jsonwebtoken = { version = "10.2", default-features = true }
+# aws_lc_rs: aws-lc-rs is already linked via rustls 0.23 (sqlx, lapin); exactly one backend is required.
+jsonwebtoken = { version = "10.2", default-features = true, features = ["aws_lc_rs"] }
 bcrypt = "0.17"
 
 # Messaging
