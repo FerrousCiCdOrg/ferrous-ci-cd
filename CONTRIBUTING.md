@@ -71,15 +71,22 @@ For PostgreSQL:
 # Create database
 createdb ferrous_ci
 
-# Run migrations
-diesel migration run
+# Run migrations (uses database.* from the config file)
+cargo run -- --config config.yaml migrate
+
+# Or apply migrations only up to a specific version
+cargo run -- --config config.yaml migrate --target 20261116000001
 ```
 
 For SQLite:
 ```bash
-# Migrations will run automatically
-cargo run
+# With database.auto_migrate: true (the default), pending migrations
+# are applied when the server starts
+cargo run -- --config config.yaml server
 ```
+
+Migrations are embedded from `migrations/postgres` and `migrations/sqlite`.
+Re-running them is a no-op; downgrades are not supported.
 
 ## Project Structure
 

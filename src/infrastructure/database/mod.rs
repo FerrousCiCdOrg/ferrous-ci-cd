@@ -7,4 +7,5 @@
 pub mod migrations;
 pub mod pool;
 
+pub use migrations::{run_migrations, MigrationReport};
 pub use pool::{connect, redact_url, DatabasePool};

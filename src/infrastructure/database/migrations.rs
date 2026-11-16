@@ -4,10 +4,19 @@
 //! repository root and are embedded into the binary at compile time. sqlx records
 //! applied versions in the `_sqlx_migrations` table, so running the migrator again
 //! against an up-to-date database is a no-op.
+//!
+//! [`run_migrations`] is the backend-agnostic entry point used by the
+//! `migrate` CLI subcommand and by server startup when
+//! `database.auto_migrate` is enabled.
 
-use sqlx::migrate::{MigrateError, Migrator};
+use std::future::Future;
+use std::pin::Pin;
+
+use sqlx::error::BoxDynError;
+use sqlx::migrate::{Migrate, MigrateError, Migration, MigrationSource, Migrator};
 use sqlx::{PgPool, SqlitePool};
 
+use super::DatabasePool;
 use crate::error::{Error, Result};
 
 /// Migrations for PostgreSQL, embedded from `migrations/postgres`.
@@ -44,6 +53,145 @@ pub async fn run_sqlite_migrations(pool: &SqlitePool) -> Result<()> {
         .run(pool)
         .await
         .map_err(|e| migrate_error("SQLite", e))
+}
+
+/// Outcome of [`run_migrations`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationReport {
+    /// Versions applied by this run, in ascending order. Empty when the
+    /// database was already up to date.
+    pub applied: Vec<i64>,
+    /// Highest successfully applied version after the run, or `None` when the
+    /// database has no applied migrations.
+    pub current_version: Option<i64>,
+}
+
+/// Apply pending migrations for the backend of `pool`.
+///
+/// With `target` set, only migrations whose version is less than or equal to
+/// `target` are applied. Downgrades are not supported: when the database
+/// already has a migration newer than `target`, an error is returned and
+/// nothing is changed. Without `target`, every pending migration is applied.
+///
+/// # Errors
+///
+/// Returns [`Error::Validation`] when `target` is not a known migration
+/// version or is older than the database's current version, and
+/// [`Error::WithContext`] wrapping the underlying [`MigrateError`] when a
+/// migration fails.
+pub async fn run_migrations(pool: &DatabasePool, target: Option<i64>) -> Result<MigrationReport> {
+    match pool {
+        DatabasePool::Postgres(pg) => {
+            let migrator = migrator_up_to(&POSTGRES_MIGRATOR, target).await?;
+            let before = applied_versions(pg.acquire().await.map_err(acquire_error)?.as_mut())
+                .await
+                .map_err(|e| migrate_error("PostgreSQL", e))?;
+            check_not_ahead(&before, target)?;
+            migrator
+                .run(pg)
+                .await
+                .map_err(|e| migrate_error("PostgreSQL", e))?;
+            let after = applied_versions(pg.acquire().await.map_err(acquire_error)?.as_mut())
+                .await
+                .map_err(|e| migrate_error("PostgreSQL", e))?;
+            Ok(report(&before, after))
+        }
+        DatabasePool::Sqlite(sqlite) => {
+            let migrator = migrator_up_to(&SQLITE_MIGRATOR, target).await?;
+            let before = applied_versions(sqlite.acquire().await.map_err(acquire_error)?.as_mut())
+                .await
+                .map_err(|e| migrate_error("SQLite", e))?;
+            check_not_ahead(&before, target)?;
+            migrator
+                .run(sqlite)
+                .await
+                .map_err(|e| migrate_error("SQLite", e))?;
+            let after = applied_versions(sqlite.acquire().await.map_err(acquire_error)?.as_mut())
+                .await
+                .map_err(|e| migrate_error("SQLite", e))?;
+            Ok(report(&before, after))
+        }
+    }
+}
+
+/// A [`MigrationSource`] backed by an in-memory list of migrations.
+#[derive(Debug)]
+struct StaticMigrations(Vec<Migration>);
+
+impl MigrationSource<'static> for StaticMigrations {
+    fn resolve(
+        self,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<Vec<Migration>, BoxDynError>> + Send>>
+    {
+        Box::pin(async move { Ok(self.0) })
+    }
+}
+
+/// Builds a migrator containing the migrations of `base` up to `target`.
+async fn migrator_up_to(base: &Migrator, target: Option<i64>) -> Result<Migrator> {
+    if let Some(target) = target {
+        if !base.version_exists(target) {
+            let known: Vec<String> = base.iter().map(|m| m.version.to_string()).collect();
+            return Err(Error::validation(format!(
+                "unknown migration version {target}; known versions: {}",
+                known.join(", ")
+            )));
+        }
+    }
+    let migrations = base
+        .iter()
+        .filter(|m| target.is_none_or(|t| m.version <= t))
+        .cloned()
+        .collect();
+    let mut migrator = Migrator::new(StaticMigrations(migrations))
+        .await
+        .map_err(|e| migrate_error("selected", e))?;
+    migrator.set_locking(base.locking);
+    Ok(migrator)
+}
+
+/// Returns the successfully applied versions in ascending order.
+async fn applied_versions<C: Migrate + ?Sized>(
+    conn: &mut C,
+) -> std::result::Result<Vec<i64>, MigrateError> {
+    conn.ensure_migrations_table().await?;
+    let mut versions: Vec<i64> = conn
+        .list_applied_migrations()
+        .await?
+        .into_iter()
+        .map(|m| m.version)
+        .collect();
+    versions.sort_unstable();
+    Ok(versions)
+}
+
+fn check_not_ahead(applied: &[i64], target: Option<i64>) -> Result<()> {
+    match (target, applied.last()) {
+        (Some(target), Some(&current)) if current > target => Err(Error::validation(format!(
+            "database is at migration version {current}, newer than target {target}; \
+             downgrades are not supported"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+fn report(before: &[i64], after: Vec<i64>) -> MigrationReport {
+    let current_version = after.last().copied();
+    let applied = after
+        .into_iter()
+        .filter(|v| before.binary_search(v).is_err())
+        .collect();
+    MigrationReport {
+        applied,
+        current_version,
+    }
+}
+
+fn acquire_error(err: sqlx::Error) -> Error {
+    Error::WithContext {
+        context: "failed to acquire a database connection for migrations".to_string(),
+        source: Box::new(err),
+    }
 }
 
 fn migrate_error(backend: &str, err: MigrateError) -> Error {
