@@ -194,6 +194,17 @@ async fn run_server(config: Config) -> Result<()> {
 
     info!("Starting Ferrous CI/CD server on {}:{}", host, port);
 
+    // Validate the whole configuration before any side effect on the
+    // database, so a bad port or storage path cannot leave a migrated database
+    // behind a server that then refuses to start. `Config::validate` creates
+    // the storage directories (blocking filesystem work), so it runs off the
+    // async runtime threads.
+    let to_validate = config.clone();
+    tokio::task::spawn_blocking(move || to_validate.validate())
+        .await
+        .context("configuration validation task failed")?
+        .context("invalid configuration")?;
+
     // Apply pending schema migrations before serving when enabled.
     ferrous_ci_cd::presentation::cli::auto_migrate(&config.database)
         .await
@@ -219,6 +230,14 @@ async fn run_server(config: Config) -> Result<()> {
 }
 
 async fn run_migrations(config: Config, target: Option<i64>) -> Result<()> {
+    // Only the database settings are validated here: the full
+    // `Config::validate` also creates the server's storage directories, which a
+    // standalone migration job (for example a Kubernetes init container
+    // without the storage volume) must not need.
+    config
+        .database
+        .validate()
+        .context("invalid database configuration")?;
     ferrous_ci_cd::presentation::cli::migrate(&config.database, target)
         .await
         .context("database migration failed")?;
