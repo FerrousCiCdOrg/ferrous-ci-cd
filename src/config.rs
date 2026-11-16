@@ -83,9 +83,24 @@ pub struct DatabaseConfig {
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
 
-    /// Connection timeout in seconds
+    /// Minimum number of idle connections the pool tries to keep open
+    #[serde(default = "default_min_connections")]
+    pub min_connections: u32,
+
+    /// Timeout in seconds for establishing a connection or acquiring one
+    /// from the pool. Must be greater than zero.
     #[serde(default = "default_connection_timeout")]
     pub connection_timeout: u64,
+
+    /// Seconds an idle connection may stay in the pool before it is closed.
+    /// `0` disables the idle timeout.
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout: u64,
+
+    /// Maximum lifetime of a pooled connection in seconds.
+    /// `0` disables the lifetime limit.
+    #[serde(default = "default_max_lifetime")]
+    pub max_lifetime: u64,
 
     /// Enable database migrations
     #[serde(default = "default_true")]
@@ -93,7 +108,7 @@ pub struct DatabaseConfig {
 }
 
 /// Database type
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DatabaseType {
     /// PostgreSQL
@@ -346,8 +361,20 @@ fn default_max_connections() -> u32 {
     10
 }
 
+fn default_min_connections() -> u32 {
+    0
+}
+
 fn default_connection_timeout() -> u64 {
     30
+}
+
+fn default_idle_timeout() -> u64 {
+    600
+}
+
+fn default_max_lifetime() -> u64 {
+    1800
 }
 
 fn default_artifacts_path() -> String {
@@ -418,6 +445,58 @@ fn default_true() -> bool {
     true
 }
 
+impl DatabaseConfig {
+    /// Validate the database settings.
+    ///
+    /// Checks that the URL is non-empty and matches `type`, and that the pool
+    /// limits are consistent. Error messages never include the URL itself,
+    /// because it may contain credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first invalid setting.
+    pub fn validate(&self) -> Result<()> {
+        if self.url.is_empty() {
+            return Err(anyhow::anyhow!("Database URL cannot be empty"));
+        }
+
+        let scheme_matches = match self.db_type {
+            DatabaseType::Postgres => {
+                self.url.starts_with("postgres://") || self.url.starts_with("postgresql://")
+            }
+            DatabaseType::Sqlite => self.url.starts_with("sqlite:"),
+        };
+        if !scheme_matches {
+            return Err(anyhow::anyhow!(
+                "Database URL scheme does not match database type {:?}",
+                self.db_type
+            ));
+        }
+
+        if self.max_connections == 0 {
+            return Err(anyhow::anyhow!(
+                "database.max_connections must be greater than 0"
+            ));
+        }
+
+        if self.min_connections > self.max_connections {
+            return Err(anyhow::anyhow!(
+                "database.min_connections ({}) must not exceed database.max_connections ({})",
+                self.min_connections,
+                self.max_connections
+            ));
+        }
+
+        if self.connection_timeout == 0 {
+            return Err(anyhow::anyhow!(
+                "database.connection_timeout must be greater than 0"
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 impl Config {
     /// Load configuration from file
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
@@ -445,7 +524,10 @@ impl Config {
                 db_type: DatabaseType::Sqlite,
                 url: "sqlite://ferrous.db".to_string(),
                 max_connections: default_max_connections(),
+                min_connections: default_min_connections(),
                 connection_timeout: default_connection_timeout(),
+                idle_timeout: default_idle_timeout(),
+                max_lifetime: default_max_lifetime(),
                 auto_migrate: true,
             },
             storage: StorageConfig {
@@ -489,10 +571,8 @@ impl Config {
             return Err(anyhow::anyhow!("Invalid port number"));
         }
 
-        // Validate database URL
-        if self.database.url.is_empty() {
-            return Err(anyhow::anyhow!("Database URL cannot be empty"));
-        }
+        // Validate database settings
+        self.database.validate()?;
 
         // Validate security config
         if self.security.jwt_secret == "change-me-in-production" {
@@ -535,5 +615,71 @@ mod tests {
         // Empty database URL should fail
         config.database.url = "".to_string();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_database_pool_defaults() {
+        let config = Config::default();
+        assert_eq!(config.database.min_connections, 0);
+        assert_eq!(config.database.connection_timeout, 30);
+        assert_eq!(config.database.idle_timeout, 600);
+        assert_eq!(config.database.max_lifetime, 1800);
+        assert!(config.database.validate().is_ok());
+    }
+
+    #[test]
+    fn test_database_pool_settings_default_when_omitted() {
+        let yaml = "type: postgres\nurl: postgresql://localhost/ferrous\nmax_connections: 20\n";
+        let db: DatabaseConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(db.db_type, DatabaseType::Postgres);
+        assert_eq!(db.max_connections, 20);
+        assert_eq!(db.min_connections, 0);
+        assert_eq!(db.connection_timeout, 30);
+        assert_eq!(db.idle_timeout, 600);
+        assert_eq!(db.max_lifetime, 1800);
+        assert!(db.auto_migrate);
+    }
+
+    #[test]
+    fn test_database_pool_settings_from_yaml() {
+        let yaml = "type: sqlite\nurl: \"sqlite::memory:\"\nmax_connections: 4\nmin_connections: 2\nconnection_timeout: 5\nidle_timeout: 0\nmax_lifetime: 0\n";
+        let db: DatabaseConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(db.min_connections, 2);
+        assert_eq!(db.connection_timeout, 5);
+        assert_eq!(db.idle_timeout, 0);
+        assert_eq!(db.max_lifetime, 0);
+        assert!(db.validate().is_ok());
+    }
+
+    #[test]
+    fn test_database_validation_rejects_invalid_pool_settings() {
+        let base = Config::default().database;
+
+        let mut db = base.clone();
+        db.max_connections = 0;
+        assert!(db.validate().is_err());
+
+        let mut db = base.clone();
+        db.min_connections = db.max_connections + 1;
+        assert!(db.validate().is_err());
+
+        let mut db = base.clone();
+        db.connection_timeout = 0;
+        assert!(db.validate().is_err());
+    }
+
+    #[test]
+    fn test_database_validation_rejects_scheme_mismatch_without_leaking_url() {
+        let mut db = Config::default().database;
+        db.db_type = DatabaseType::Postgres;
+        db.url = "mysql://user:s3cret@localhost/db".to_string();
+        let err = db.validate().unwrap_err().to_string();
+        assert!(!err.contains("s3cret"));
+
+        db.url = "postgres://user:s3cret@localhost/db".to_string();
+        assert!(db.validate().is_ok());
+
+        db.db_type = DatabaseType::Sqlite;
+        assert!(db.validate().is_err());
     }
 }

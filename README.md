@@ -86,6 +86,10 @@ database:
   type: "postgres" # or "sqlite"
   url: "postgresql://user:password@localhost/ferrous_ci"
   max_connections: 10
+  min_connections: 0
+  connection_timeout: 30 # seconds
+  idle_timeout: 600 # seconds, 0 disables
+  max_lifetime: 1800 # seconds, 0 disables
 
 storage:
   artifacts_path: "./artifacts"
