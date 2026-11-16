@@ -68,7 +68,8 @@ impl DatabasePool {
 ///
 /// Returns [`Error::Config`] when the configuration is invalid, and
 /// [`Error::Timeout`] or [`Error::Database`] when the pool cannot connect.
-/// Error messages contain the URL with credentials redacted.
+/// Error messages contain the URL with credentials redacted, or no URL at
+/// all when it cannot be parsed.
 pub async fn connect(config: &DatabaseConfig) -> Result<DatabasePool> {
     config
         .validate()
@@ -82,7 +83,7 @@ pub async fn connect(config: &DatabaseConfig) -> Result<DatabasePool> {
     match config.db_type {
         DatabaseType::Postgres => {
             let options = PgConnectOptions::from_str(&config.url)
-                .map_err(|e| Error::config(format!("invalid PostgreSQL URL {redacted}: {e}")))?;
+                .map_err(|e| invalid_url_error("PostgreSQL", &config.url, &e))?;
             let pool = PgPoolOptions::new()
                 .max_connections(config.max_connections)
                 .min_connections(config.min_connections)
@@ -96,7 +97,7 @@ pub async fn connect(config: &DatabaseConfig) -> Result<DatabasePool> {
         }
         DatabaseType::Sqlite => {
             let options = SqliteConnectOptions::from_str(&config.url)
-                .map_err(|e| Error::config(format!("invalid SQLite URL {redacted}: {e}")))?
+                .map_err(|e| invalid_url_error("SQLite", &config.url, &e))?
                 .create_if_missing(true);
             let pool = SqlitePoolOptions::new()
                 .max_connections(config.max_connections)
@@ -117,56 +118,88 @@ pub async fn connect(config: &DatabaseConfig) -> Result<DatabasePool> {
 ///
 /// The user name is kept to aid diagnosis. Input that does not look like a
 /// URL is returned unchanged.
+///
+/// Passwords are not always percent-encoded in practice (for example a
+/// generated secret interpolated into `postgresql://user:$(PASSWORD)@host`), so
+/// they may contain `/`, `?`, `#`, `:` or `@`. The userinfo is therefore taken
+/// to end at the **last** `@` after the scheme, not at the first `/`, `?` or
+/// `#`. This can over-mask a URL without credentials whose query contains both
+/// `:` and `@`, but it never reveals a password.
 #[must_use]
 pub fn redact_url(url: &str) -> String {
     const MASK: &str = "***";
+
+    let Some(idx) = url.find("://") else {
+        return url.to_string();
+    };
+    let (scheme, rest) = (&url[..idx + 3], &url[idx + 3..]);
+
+    // Split off the userinfo at the last `@`. A password is everything after
+    // the first `:` of the userinfo.
+    let (userinfo, after_userinfo) = match rest.rfind('@') {
+        Some(at) => {
+            let (userinfo, host_and_tail) = rest.split_at(at);
+            let userinfo = match userinfo.find(':') {
+                Some(colon) => format!("{}:{MASK}", &userinfo[..colon]),
+                None => userinfo.to_string(),
+            };
+            (userinfo, host_and_tail)
+        }
+        None => (String::new(), rest),
+    };
+
+    let authority_end = after_userinfo
+        .find(['/', '?', '#'])
+        .unwrap_or(after_userinfo.len());
+    let (host, tail) = after_userinfo.split_at(authority_end);
+
+    format!("{scheme}{userinfo}{host}{}", redact_query(tail))
+}
+
+/// Masks the values of credential query parameters in a URL path/query/fragment.
+fn redact_query(tail: &str) -> String {
+    const MASK: &str = "***";
     const SECRET_PARAMS: [&str; 3] = ["password", "sslpassword", "pass"];
 
-    let (scheme, rest) = match url.find("://") {
-        Some(idx) => (&url[..idx + 3], &url[idx + 3..]),
-        None => ("", url),
+    let Some(q) = tail.find('?') else {
+        return tail.to_string();
     };
-
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let (authority, tail) = rest.split_at(authority_end);
-
-    let authority = match (scheme.is_empty(), authority.rfind('@')) {
-        (false, Some(at)) => {
-            let (userinfo, host) = authority.split_at(at);
-            match userinfo.find(':') {
-                Some(colon) => format!("{}:{MASK}{host}", &userinfo[..colon]),
-                None => authority.to_string(),
+    let (path, query_and_fragment) = tail.split_at(q);
+    let query_and_fragment = &query_and_fragment[1..];
+    let (query, fragment) = match query_and_fragment.find('#') {
+        Some(h) => query_and_fragment.split_at(h),
+        None => (query_and_fragment, ""),
+    };
+    let query = query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((key, _)) if SECRET_PARAMS.contains(&key.to_ascii_lowercase().as_str()) => {
+                format!("{key}={MASK}")
             }
-        }
-        _ => authority.to_string(),
-    };
+            _ => pair.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{path}?{query}{fragment}")
+}
 
-    let tail = match tail.find('?') {
-        Some(q) => {
-            let (path, query_and_fragment) = tail.split_at(q);
-            let query_and_fragment = &query_and_fragment[1..];
-            let (query, fragment) = match query_and_fragment.find('#') {
-                Some(h) => query_and_fragment.split_at(h),
-                None => (query_and_fragment, ""),
-            };
-            let query = query
-                .split('&')
-                .map(|pair| match pair.split_once('=') {
-                    Some((key, _))
-                        if SECRET_PARAMS.contains(&key.to_ascii_lowercase().as_str()) =>
-                    {
-                        format!("{key}={MASK}")
-                    }
-                    _ => pair.to_string(),
-                })
-                .collect::<Vec<_>>()
-                .join("&");
-            format!("{path}?{query}{fragment}")
-        }
-        None => tail.to_string(),
-    };
-
-    format!("{scheme}{authority}{tail}")
+/// Builds the error for a URL the driver could not parse.
+///
+/// The URL itself is never echoed: if it could not be parsed, redaction
+/// cannot be trusted to find the password either. Only the scheme is shown.
+fn invalid_url_error(backend: &str, url: &str, err: &sqlx::Error) -> Error {
+    let scheme = url
+        .split_once(':')
+        .map(|(scheme, _)| scheme)
+        .filter(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        })
+        .unwrap_or("<unknown>");
+    Error::config(format!(
+        "invalid {backend} URL (scheme `{scheme}`, <unparseable URL>): {err}"
+    ))
 }
 
 fn non_zero_secs(secs: u64) -> Option<Duration> {
@@ -319,5 +352,55 @@ mod tests {
             redact_url("sqlite:///var/lib/ferrous/ferrous.db"),
             "sqlite:///var/lib/ferrous/ferrous.db"
         );
+    }
+
+    #[test]
+    fn redact_url_masks_passwords_with_unencoded_delimiters() {
+        for password in ["pa/ss", "pa?ss", "pa#ss", "pa:ss", "pa@ss", "a/b?c#d:e@f"] {
+            let url = format!("postgresql://ferrous:{password}@db.example.com:5432/ferrous");
+            let redacted = redact_url(&url);
+            assert_eq!(
+                redacted, "postgresql://ferrous:***@db.example.com:5432/ferrous",
+                "password {password:?}"
+            );
+            assert!(!redacted.contains(password), "password {password:?} leaked");
+        }
+    }
+
+    #[test]
+    fn redact_url_masks_unencoded_password_and_query_parameter_together() {
+        assert_eq!(
+            redact_url("postgres://u:p/w@db/x?sslmode=require&password=q#frag"),
+            "postgres://u:***@db/x?sslmode=require&password=***#frag"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_with_unparseable_url_never_echoes_password() {
+        for password in ["pa/ss", "pa?ss", "pa#ss"] {
+            let config = DatabaseConfig {
+                db_type: DatabaseType::Postgres,
+                url: format!("postgres://ferrous:{password}@127.0.0.1:1/ferrous"),
+                max_connections: 1,
+                min_connections: 0,
+                connection_timeout: 1,
+                idle_timeout: 0,
+                max_lifetime: 0,
+                auto_migrate: false,
+            };
+            let err = connect(&config).await.unwrap_err();
+            let message = err.to_string();
+            assert!(matches!(err, Error::Config(_)), "unexpected error: {err:?}");
+            assert!(
+                !message.contains(password),
+                "password {password:?} leaked: {message}"
+            );
+            assert!(
+                !message.contains("ss@"),
+                "password {password:?} leaked: {message}"
+            );
+            assert!(message.contains("<unparseable URL>"), "{message}");
+            assert!(message.contains("`postgres`"), "{message}");
+        }
     }
 }

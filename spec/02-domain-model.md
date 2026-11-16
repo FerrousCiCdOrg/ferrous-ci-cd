@@ -425,7 +425,11 @@ or backend-agnostically by `infrastructure::database::run_migrations`, which als
 accepts an optional target version (downgrades are rejected).
 Applied versions are tracked in `_sqlx_migrations`, so re-running is a no-op.
 The `ferrous-ci-cd migrate [--target <VERSION>]` subcommand runs them on demand,
-and `server` startup runs them first when `database.auto_migrate` is `true`.
+and `server` startup runs them first when `database.auto_migrate` is `true`
+(after the full configuration has been validated); both go through the
+application-layer use case `application::use_cases::migration`. A run holds the
+migrator's lock (a PostgreSQL advisory lock) for its whole duration, including
+creating `_sqlx_migrations`, so replicas starting concurrently are serialized.
 
 | Table       | Aggregate / entity | Notes |
 |-------------|--------------------|-------|
@@ -443,3 +447,20 @@ SQLite. UUIDs and timestamps use native types on PostgreSQL and `TEXT` on SQLite
 Enum-valued columns (statuses, roles, visibility, artifact type) are `TEXT`; their
 encoding is owned by the repository adapters. `Workspace` is agent-local state and
 is not persisted.
+
+Repository adapters must follow these encoding rules so both backends and all
+adapters agree on the stored values:
+
+- **Unsigned integers.** Unsigned domain fields (`Build.number`, `Job.timeout`,
+  `Artifact.size`: `u64`; `Agent.max_concurrent_jobs`, `Agent.current_jobs`:
+  `usize`) are stored in signed 64-bit columns (`BIGINT` on PostgreSQL,
+  `INTEGER` on SQLite) guarded by `CHECK (... >= 0)`. Adapters must convert with
+  checked conversions (`i64::try_from` on write, `u64::try_from` /
+  `usize::try_from` on read) and return an error for out-of-range values, never
+  `as` casts that silently wrap.
+- **SQLite UUIDs.** UUID columns on SQLite are `TEXT` holding the lowercase
+  hyphenated form (`Uuid::hyphenated()`, e.g.
+  `67e55044-10b1-426f-9247-bb680e5fe0c8`). Adapters must bind UUIDs as strings,
+  not as `Uuid` values: sqlx's default SQLite encoding for `Uuid` is a 16-byte
+  `BLOB`, which would never compare equal to the `TEXT` keys and foreign keys.
+  PostgreSQL uses the native `UUID` type and binds `Uuid` directly.

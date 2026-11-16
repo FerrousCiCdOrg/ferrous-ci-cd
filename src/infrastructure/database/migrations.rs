@@ -73,6 +73,15 @@ pub struct MigrationReport {
 /// already has a migration newer than `target`, an error is returned and
 /// nothing is changed. Without `target`, every pending migration is applied.
 ///
+/// The whole run happens on one dedicated connection that holds the
+/// migrator's database lock (a PostgreSQL advisory lock; SQLite needs none)
+/// for its entire duration: creating `_sqlx_migrations`, reading the applied
+/// versions before and after, and applying migrations. Concurrent callers,
+/// such as several server replicas starting with `auto_migrate`, are
+/// therefore serialized and see a consistent report. When locking is used,
+/// the connection is closed afterwards instead of being returned to the pool,
+/// so a lock can never leak to another pool user, even on error.
+///
 /// # Errors
 ///
 /// Returns [`Error::Validation`] when `target` is not a known migration
@@ -83,35 +92,73 @@ pub async fn run_migrations(pool: &DatabasePool, target: Option<i64>) -> Result<
     match pool {
         DatabasePool::Postgres(pg) => {
             let migrator = migrator_up_to(&POSTGRES_MIGRATOR, target).await?;
-            let before = applied_versions(pg.acquire().await.map_err(acquire_error)?.as_mut())
-                .await
-                .map_err(|e| migrate_error("PostgreSQL", e))?;
-            check_not_ahead(&before, target)?;
-            migrator
-                .run(pg)
-                .await
-                .map_err(|e| migrate_error("PostgreSQL", e))?;
-            let after = applied_versions(pg.acquire().await.map_err(acquire_error)?.as_mut())
-                .await
-                .map_err(|e| migrate_error("PostgreSQL", e))?;
-            Ok(report(&before, after))
+            let mut conn = pg.acquire().await.map_err(acquire_error)?;
+            if migrator.locking {
+                conn.close_on_drop();
+            }
+            run_locked(&mut *conn, migrator, target, "PostgreSQL").await
         }
         DatabasePool::Sqlite(sqlite) => {
             let migrator = migrator_up_to(&SQLITE_MIGRATOR, target).await?;
-            let before = applied_versions(sqlite.acquire().await.map_err(acquire_error)?.as_mut())
-                .await
-                .map_err(|e| migrate_error("SQLite", e))?;
-            check_not_ahead(&before, target)?;
-            migrator
-                .run(sqlite)
-                .await
-                .map_err(|e| migrate_error("SQLite", e))?;
-            let after = applied_versions(sqlite.acquire().await.map_err(acquire_error)?.as_mut())
-                .await
-                .map_err(|e| migrate_error("SQLite", e))?;
-            Ok(report(&before, after))
+            let mut conn = sqlite.acquire().await.map_err(acquire_error)?;
+            if migrator.locking {
+                conn.close_on_drop();
+            }
+            run_locked(&mut *conn, migrator, target, "SQLite").await
         }
     }
+}
+
+/// Runs `migrator` on `conn` while holding the migrator's lock, reading the
+/// applied versions before and after the run under the same lock.
+async fn run_locked<C: Migrate>(
+    conn: &mut C,
+    mut migrator: Migrator,
+    target: Option<i64>,
+    backend: &str,
+) -> Result<MigrationReport> {
+    let locking = migrator.locking;
+    // The lock is taken here, so the migrator must not take it again.
+    migrator.set_locking(false);
+
+    if locking {
+        conn.lock().await.map_err(|e| migrate_error(backend, e))?;
+    }
+
+    let result = run_under_lock(conn, &migrator, target, backend).await;
+
+    if locking {
+        if let Err(e) = conn.unlock().await {
+            let unlock_err = migrate_error(backend, e);
+            if result.is_ok() {
+                return Err(unlock_err);
+            }
+            // Keep the original error; the connection is closed on drop,
+            // which releases the lock anyway.
+            tracing::warn!("failed to release migration lock: {unlock_err}");
+        }
+    }
+    result
+}
+
+async fn run_under_lock<C: Migrate>(
+    conn: &mut C,
+    migrator: &Migrator,
+    target: Option<i64>,
+    backend: &str,
+) -> Result<MigrationReport> {
+    let before = applied_versions(conn)
+        .await
+        .map_err(|e| migrate_error(backend, e))?;
+    check_not_ahead(&before, target)?;
+    migrator
+        .run_direct(conn)
+        .await
+        .map_err(|e| migrate_error(backend, e))?;
+    let after = applied_versions(conn)
+        .await
+        .map_err(|e| migrate_error(backend, e))?;
+    Ok(report(&before, after))
 }
 
 /// A [`MigrationSource`] backed by an in-memory list of migrations.
@@ -145,12 +192,18 @@ async fn migrator_up_to(base: &Migrator, target: Option<i64>) -> Result<Migrator
         .collect();
     let mut migrator = Migrator::new(StaticMigrations(migrations))
         .await
-        .map_err(|e| migrate_error("selected", e))?;
+        .map_err(|e| Error::WithContext {
+            context: "failed to build the migration set for the requested target".to_string(),
+            source: Box::new(e),
+        })?;
     migrator.set_locking(base.locking);
     Ok(migrator)
 }
 
 /// Returns the successfully applied versions in ascending order.
+///
+/// Creates `_sqlx_migrations` when missing, so it must be called while the
+/// migration lock is held.
 async fn applied_versions<C: Migrate + ?Sized>(
     conn: &mut C,
 ) -> std::result::Result<Vec<i64>, MigrateError> {
@@ -332,6 +385,159 @@ mod tests {
             .await
             .expect("count builds");
         assert_eq!(remaining, 0, "deleting a project cascades to its builds");
+    }
+
+    /// A [`Migrate`] implementation that records the calls made on it.
+    #[derive(Default)]
+    struct RecordingConn {
+        events: Vec<String>,
+        applied: Vec<sqlx::migrate::AppliedMigration>,
+        fail_apply: bool,
+    }
+
+    type Fut<'a, T> =
+        Pin<Box<dyn Future<Output = std::result::Result<T, MigrateError>> + Send + 'a>>;
+
+    impl Migrate for RecordingConn {
+        fn ensure_migrations_table(&mut self) -> Fut<'_, ()> {
+            self.events.push("ensure".into());
+            Box::pin(async { Ok(()) })
+        }
+        fn dirty_version(&mut self) -> Fut<'_, Option<i64>> {
+            self.events.push("dirty".into());
+            Box::pin(async { Ok(None) })
+        }
+        fn list_applied_migrations(&mut self) -> Fut<'_, Vec<sqlx::migrate::AppliedMigration>> {
+            self.events.push("list".into());
+            let applied = self.applied.clone();
+            Box::pin(async move { Ok(applied) })
+        }
+        fn lock(&mut self) -> Fut<'_, ()> {
+            self.events.push("lock".into());
+            Box::pin(async { Ok(()) })
+        }
+        fn unlock(&mut self) -> Fut<'_, ()> {
+            self.events.push("unlock".into());
+            Box::pin(async { Ok(()) })
+        }
+        fn apply<'e: 'm, 'm>(
+            &'e mut self,
+            migration: &'m Migration,
+        ) -> Fut<'m, std::time::Duration> {
+            self.events.push(format!("apply:{}", migration.version));
+            if self.fail_apply {
+                return Box::pin(async { Err(MigrateError::Execute(sqlx::Error::PoolClosed)) });
+            }
+            self.applied.push(sqlx::migrate::AppliedMigration {
+                version: migration.version,
+                checksum: migration.checksum.clone(),
+            });
+            Box::pin(async { Ok(std::time::Duration::ZERO) })
+        }
+        fn revert<'e: 'm, 'm>(
+            &'e mut self,
+            _migration: &'m Migration,
+        ) -> Fut<'m, std::time::Duration> {
+            unreachable!("migrations are never reverted")
+        }
+    }
+
+    async fn locking_migrator() -> Migrator {
+        let migrator = migrator_up_to(&SQLITE_MIGRATOR, None).await.unwrap();
+        assert!(migrator.locking);
+        migrator
+    }
+
+    #[tokio::test]
+    async fn run_locked_reads_and_creates_table_only_under_the_lock() {
+        let mut conn = RecordingConn::default();
+        let report = run_locked(&mut conn, locking_migrator().await, None, "test")
+            .await
+            .unwrap();
+
+        let events = &conn.events;
+        assert_eq!(
+            events.first().map(String::as_str),
+            Some("lock"),
+            "{events:?}"
+        );
+        assert_eq!(
+            events.last().map(String::as_str),
+            Some("unlock"),
+            "{events:?}"
+        );
+        assert_eq!(
+            events.iter().filter(|e| *e == "lock").count(),
+            1,
+            "{events:?}"
+        );
+        assert_eq!(
+            events.iter().filter(|e| *e == "unlock").count(),
+            1,
+            "{events:?}"
+        );
+        // Table creation and both reads happen between lock and unlock.
+        assert!(
+            events.iter().filter(|e| *e == "ensure").count() >= 2,
+            "{events:?}"
+        );
+
+        let all: Vec<i64> = SQLITE_MIGRATOR.iter().map(|m| m.version).collect();
+        assert_eq!(report.applied, all);
+        assert_eq!(report.current_version, all.last().copied());
+    }
+
+    #[tokio::test]
+    async fn run_locked_releases_the_lock_when_a_migration_fails() {
+        let mut conn = RecordingConn {
+            fail_apply: true,
+            ..RecordingConn::default()
+        };
+        let err = run_locked(&mut conn, locking_migrator().await, None, "test")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::WithContext { .. }), "{err:?}");
+        assert_eq!(conn.events.last().map(String::as_str), Some("unlock"));
+    }
+
+    #[tokio::test]
+    async fn run_locked_releases_the_lock_when_target_is_rejected() {
+        let latest = SQLITE_MIGRATOR.iter().map(|m| m.version).max().unwrap();
+        let mut conn = RecordingConn::default();
+        conn.applied.push(sqlx::migrate::AppliedMigration {
+            version: latest + 1,
+            checksum: Vec::new().into(),
+        });
+        let migrator = migrator_up_to(&SQLITE_MIGRATOR, Some(latest))
+            .await
+            .unwrap();
+        let err = run_locked(&mut conn, migrator, Some(latest), "test")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Validation(_)), "{err:?}");
+        assert!(!conn.events.iter().any(|e| e.starts_with("apply")));
+        assert_eq!(conn.events.last().map(String::as_str), Some("unlock"));
+    }
+
+    #[tokio::test]
+    async fn run_locked_without_locking_never_locks() {
+        let mut migrator = locking_migrator().await;
+        migrator.set_locking(false);
+        let mut conn = RecordingConn::default();
+        run_locked(&mut conn, migrator, None, "test").await.unwrap();
+        assert!(!conn.events.iter().any(|e| e == "lock" || e == "unlock"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a PostgreSQL server; set DATABASE_URL to run"]
+    async fn postgres_concurrent_migrations_are_serialized() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pool = DatabasePool::Postgres(PgPool::connect(&url).await.expect("connect"));
+        let runs = (0..3).map(|_| run_migrations(&pool, None));
+        let reports = futures::future::join_all(runs).await;
+        for report in &reports {
+            assert!(report.is_ok(), "{report:?}");
+        }
     }
 
     #[tokio::test]

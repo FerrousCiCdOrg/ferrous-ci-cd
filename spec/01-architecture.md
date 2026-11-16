@@ -148,6 +148,19 @@ Ferrous CI/CD adopts a clean architecture based on Domain-Driven Design (DDD) pr
 3. **Infrastructure Layer**: Implements Domain Layer interfaces
 4. **Presentation Layer**: Depends only on Application Layer
 
+### Composition Root Exception
+
+The application root wires concrete infrastructure implementations into the
+use cases: `Application::new` (`src/application/mod.rs`) selects repository
+implementations, and the schema migration use case
+(`src/application/use_cases/migration.rs`) uses
+`infrastructure::database` to open the connection pool and run migrations,
+because migrations are an operational bootstrap step with no domain interface.
+These are the only places where the Application Layer references the
+Infrastructure Layer; the Presentation Layer still goes through the Application
+Layer only (for example, the `migrate` CLI subcommand calls the migration use
+case).
+
 ### Dependency Inversion Principle
 
 - Repository interfaces are defined in Domain Layer

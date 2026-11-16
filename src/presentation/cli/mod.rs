@@ -1,18 +1,19 @@
 //! CLI handlers
 //!
 //! Database handlers back the `migrate` subcommand and the automatic
-//! migration step that runs before the server starts.
+//! migration step that runs before the server starts. They delegate to the
+//! application-layer [`migration`] use case and only report the outcome.
 
 use tracing::info;
 
+use crate::application::use_cases::migration::{self, SchemaMigrationReport};
 use crate::config::DatabaseConfig;
 use crate::error::Result;
-use crate::infrastructure::database::{self, redact_url, MigrationReport};
 
 /// Handles `ferrous-ci-cd migrate [--target <VERSION>]`.
 ///
-/// Connects to the configured database, applies pending migrations up to
-/// `target` (or all of them when `target` is `None`), and closes the pool.
+/// Applies pending migrations up to `target` (or all of them when `target` is
+/// `None`) through [`migration::migrate_database`] and logs the outcome.
 /// Running it against an up-to-date database is a no-op.
 ///
 /// # Errors
@@ -20,17 +21,11 @@ use crate::infrastructure::database::{self, redact_url, MigrationReport};
 /// Returns an error when the configuration is invalid, the database cannot be
 /// reached, `target` is unknown or older than the current schema version, or
 /// a migration fails.
-pub async fn migrate(config: &DatabaseConfig, target: Option<i64>) -> Result<MigrationReport> {
-    info!(
-        "Running {:?} database migrations against {}{}",
-        config.db_type,
-        redact_url(&config.url),
-        target.map_or_else(String::new, |t| format!(" (target {t})"))
-    );
-    let pool = database::connect(config).await?;
-    let result = database::run_migrations(&pool, target).await;
-    pool.close().await;
-    let report = result?;
+pub async fn migrate(
+    config: &DatabaseConfig,
+    target: Option<i64>,
+) -> Result<SchemaMigrationReport> {
+    let report = migration::migrate_database(config, target).await?;
     log_report(&report);
     Ok(report)
 }
@@ -45,15 +40,15 @@ pub async fn migrate(config: &DatabaseConfig, target: Option<i64>) -> Result<Mig
 ///
 /// Returns the same errors as [`migrate`]; the server must not start on an
 /// error.
-pub async fn auto_migrate(config: &DatabaseConfig) -> Result<Option<MigrationReport>> {
-    if !config.auto_migrate {
-        info!("Automatic database migration is disabled (database.auto_migrate = false)");
-        return Ok(None);
+pub async fn auto_migrate(config: &DatabaseConfig) -> Result<Option<SchemaMigrationReport>> {
+    let report = migration::auto_migrate_database(config).await?;
+    if let Some(report) = &report {
+        log_report(report);
     }
-    migrate(config, None).await.map(Some)
+    Ok(report)
 }
 
-fn log_report(report: &MigrationReport) {
+fn log_report(report: &SchemaMigrationReport) {
     let current = report
         .current_version
         .map_or_else(|| "none".to_string(), |v| v.to_string());
@@ -72,8 +67,6 @@ fn log_report(report: &MigrationReport) {
 mod tests {
     use super::*;
     use crate::config::DatabaseType;
-    use crate::error::Error;
-    use crate::infrastructure::database::migrations::SQLITE_MIGRATOR;
 
     fn sqlite_config(path: &std::path::Path, auto_migrate: bool) -> DatabaseConfig {
         DatabaseConfig {
@@ -88,106 +81,30 @@ mod tests {
         }
     }
 
-    fn latest_version() -> i64 {
-        SQLITE_MIGRATOR
-            .iter()
-            .map(|m| m.version)
-            .max()
-            .expect("at least one migration")
-    }
-
     #[tokio::test]
-    async fn migrate_applies_all_then_is_a_no_op() {
+    async fn migrate_delegates_to_the_use_case() {
         let dir = tempfile::tempdir().unwrap();
         let config = sqlite_config(&dir.path().join("ferrous.db"), false);
 
         let first = migrate(&config, None).await.unwrap();
-        assert_eq!(first.applied.len(), SQLITE_MIGRATOR.iter().count());
-        assert_eq!(first.current_version, Some(latest_version()));
-
+        assert!(!first.applied.is_empty());
         let second = migrate(&config, None).await.unwrap();
         assert!(second.applied.is_empty());
-        assert_eq!(second.current_version, Some(latest_version()));
+        assert_eq!(second.current_version, first.current_version);
     }
 
     #[tokio::test]
-    async fn migrate_to_latest_target_succeeds_and_is_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = sqlite_config(&dir.path().join("ferrous.db"), false);
-        let latest = latest_version();
-
-        let report = migrate(&config, Some(latest)).await.unwrap();
-        assert_eq!(report.current_version, Some(latest));
-        assert!(report.applied.contains(&latest));
-
-        let again = migrate(&config, Some(latest)).await.unwrap();
-        assert!(again.applied.is_empty());
-    }
-
-    #[tokio::test]
-    async fn migrate_rejects_unknown_target() {
+    async fn auto_migrate_respects_the_flag() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ferrous.db");
-        let err = migrate(&sqlite_config(&path, false), Some(1))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, Error::Validation(_)), "unexpected: {err:?}");
-    }
-
-    #[tokio::test]
-    async fn migrate_rejects_target_older_than_database() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = sqlite_config(&dir.path().join("ferrous.db"), false);
-        let latest = latest_version();
-        migrate(&config, None).await.unwrap();
-
-        // Pretend a newer migration was applied by another build.
-        let pool = database::connect(&config).await.unwrap();
-        sqlx::query(
-            "INSERT INTO _sqlx_migrations (version, description, success, checksum, \
-             execution_time) VALUES (?1, 'future', 1, x'00', 0)",
-        )
-        .bind(latest + 1)
-        .execute(pool.as_sqlite().unwrap())
-        .await
-        .unwrap();
-        pool.close().await;
-
-        let err = migrate(&config, Some(latest)).await.unwrap_err();
-        assert!(matches!(err, Error::Validation(_)), "unexpected: {err:?}");
-        assert!(err.to_string().contains("downgrades are not supported"));
-    }
-
-    #[tokio::test]
-    async fn auto_migrate_disabled_does_not_touch_database() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ferrous.db");
-        let report = auto_migrate(&sqlite_config(&path, false)).await.unwrap();
-        assert!(report.is_none());
-        assert!(!path.exists(), "database must not be created");
-    }
-
-    #[tokio::test]
-    async fn auto_migrate_enabled_applies_migrations() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ferrous.db");
-        let report = auto_migrate(&sqlite_config(&path, true))
+        assert!(auto_migrate(&sqlite_config(&path, false))
             .await
             .unwrap()
-            .expect("migrations ran");
-        assert_eq!(report.current_version, Some(latest_version()));
-    }
-
-    #[tokio::test]
-    async fn migrate_reports_connection_failure() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("missing-dir").join("ferrous.db");
-        let err = migrate(&sqlite_config(&path, false), None)
+            .is_none());
+        assert!(!path.exists());
+        assert!(auto_migrate(&sqlite_config(&path, true))
             .await
-            .unwrap_err();
-        assert!(
-            matches!(err, Error::Database(_) | Error::Timeout(_)),
-            "unexpected: {err:?}"
-        );
+            .unwrap()
+            .is_some());
     }
 }
