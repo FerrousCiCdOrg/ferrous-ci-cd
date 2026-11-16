@@ -420,8 +420,12 @@ Provides business logic related to agents.
 
 The relational schema is defined by sqlx migrations under `migrations/postgres`
 and `migrations/sqlite` (equivalent SQL per backend) and is applied by
-`infrastructure::database::migrations::{run_postgres_migrations, run_sqlite_migrations}`.
+`infrastructure::database::migrations::{run_postgres_migrations, run_sqlite_migrations}`,
+or backend-agnostically by `infrastructure::database::run_migrations`, which also
+accepts an optional target version (downgrades are rejected).
 Applied versions are tracked in `_sqlx_migrations`, so re-running is a no-op.
+The `ferrous-ci-cd migrate [--target <VERSION>]` subcommand runs them on demand,
+and `server` startup runs them first when `database.auto_migrate` is `true`.
 
 | Table       | Aggregate / entity | Notes |
 |-------------|--------------------|-------|
