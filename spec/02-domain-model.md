@@ -415,3 +415,27 @@ Provides business logic related to agents.
 - Agent availability checks
 - Label matching
 - Agent health checks
+
+## Persisted Schema
+
+The relational schema is defined by sqlx migrations under `migrations/postgres`
+and `migrations/sqlite` (equivalent SQL per backend) and is applied by
+`infrastructure::database::migrations::{run_postgres_migrations, run_sqlite_migrations}`.
+Applied versions are tracked in `_sqlx_migrations`, so re-running is a no-op.
+
+| Table       | Aggregate / entity | Notes |
+|-------------|--------------------|-------|
+| `users`     | `User`             | `username` and `email` are unique |
+| `projects`  | `Project`          | `name` is unique (`find_by_name`); `settings` stored as JSON |
+| `pipelines` | `Pipeline`         | FK `project_id` (cascade); `config`, `tags`, `environment` stored as JSON |
+| `agents`    | `Agent`            | `labels` and `platform` stored as JSON |
+| `builds`    | `Build`            | FK `pipeline_id`, `project_id` (cascade), `agent_id` (set null); `(pipeline_id, number)` is unique; `trigger` stored as JSON |
+| `stages`    | `Stage`            | FK `build_id` (cascade) |
+| `jobs`      | `Job`              | FK `build_id` (cascade), `agent_id` (set null) |
+| `artifacts` | `Artifact`         | FK `build_id` (cascade) |
+
+Maps, lists, and nested value objects use `JSONB` on PostgreSQL and JSON text on
+SQLite. UUIDs and timestamps use native types on PostgreSQL and `TEXT` on SQLite.
+Enum-valued columns (statuses, roles, visibility, artifact type) are `TEXT`; their
+encoding is owned by the repository adapters. `Workspace` is agent-local state and
+is not persisted.
