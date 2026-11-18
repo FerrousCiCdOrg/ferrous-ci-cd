@@ -78,9 +78,11 @@ pub struct MigrationReport {
 /// for its entire duration: creating `_sqlx_migrations`, reading the applied
 /// versions before and after, and applying migrations. Concurrent callers,
 /// such as several server replicas starting with `auto_migrate`, are
-/// therefore serialized and see a consistent report. When locking is used,
-/// the connection is closed afterwards instead of being returned to the pool,
-/// so a lock can never leak to another pool user, even on error.
+/// therefore serialized and see a consistent report. For PostgreSQL with
+/// locking, the connection is closed afterwards instead of being returned to
+/// the pool, so a lock can never leak to another pool user, even on error.
+/// SQLite connections are returned to the pool, so an in-memory database
+/// keeps its schema.
 ///
 /// # Errors
 ///
@@ -93,6 +95,8 @@ pub async fn run_migrations(pool: &DatabasePool, target: Option<i64>) -> Result<
         DatabasePool::Postgres(pg) => {
             let migrator = migrator_up_to(&POSTGRES_MIGRATOR, target).await?;
             let mut conn = pg.acquire().await.map_err(acquire_error)?;
+            // The advisory lock is session-scoped: never return a connection
+            // that may still hold it to the pool.
             if migrator.locking {
                 conn.close_on_drop();
             }
@@ -100,10 +104,9 @@ pub async fn run_migrations(pool: &DatabasePool, target: Option<i64>) -> Result<
         }
         DatabasePool::Sqlite(sqlite) => {
             let migrator = migrator_up_to(&SQLITE_MIGRATOR, target).await?;
+            // SQLite has no session lock, so the connection goes back to the
+            // pool. Closing it could destroy a `sqlite::memory:` database.
             let mut conn = sqlite.acquire().await.map_err(acquire_error)?;
-            if migrator.locking {
-                conn.close_on_drop();
-            }
             run_locked(&mut *conn, migrator, target, "SQLite").await
         }
     }
@@ -326,6 +329,31 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn run_migrations_keeps_schema_of_in_memory_sqlite_pool() {
+        let config = crate::config::DatabaseConfig {
+            db_type: crate::config::DatabaseType::Sqlite,
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            min_connections: 0,
+            connection_timeout: 5,
+            idle_timeout: 0,
+            max_lifetime: 0,
+            auto_migrate: false,
+        };
+        let pool = super::super::connect(&config).await.expect("connect");
+
+        let first = run_migrations(&pool, None).await.expect("first run");
+        assert_eq!(first.applied.len(), SQLITE_MIGRATOR.iter().count());
+
+        let sqlite = pool.as_sqlite().expect("sqlite pool");
+        assert_eq!(sqlite_tables(sqlite).await, EXPECTED_TABLES);
+
+        let second = run_migrations(&pool, None).await.expect("second run");
+        assert!(second.applied.is_empty(), "re-applied: {second:?}");
+        assert_eq!(second.current_version, first.current_version);
+        pool.close().await;
+    }
     #[tokio::test]
     async fn sqlite_schema_enforces_build_number_uniqueness_and_cascades() {
         let pool = SqlitePoolOptions::new()
