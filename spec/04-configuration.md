@@ -146,7 +146,10 @@ Database configuration.
 
 The URL scheme must match `type`: `postgres://` or `postgresql://` for
 PostgreSQL, `sqlite:` for SQLite. SQLite database files are created when
-missing. Connection errors report the URL with the password redacted.
+missing. Connection errors and migration logs report the URL with the
+password and credential query parameters (such as `password` or
+`sslpassword`) redacted; a credential query value is masked up to the end of
+the URL.
 
 **PostgreSQL Connection URL Example**:
 ```

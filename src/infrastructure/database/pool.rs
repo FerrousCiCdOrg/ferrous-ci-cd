@@ -116,71 +116,101 @@ pub async fn connect(config: &DatabaseConfig) -> Result<DatabasePool> {
 /// Returns `url` with any password and credential query parameters replaced
 /// by `***`, so it can be safely logged or embedded in error messages.
 ///
-/// The user name is kept to aid diagnosis. Input that does not look like a
-/// URL is returned unchanged.
+/// The user name and host are kept to aid diagnosis when that is safe.
+/// Input without `://` that has no `@` and no credential query parameter
+/// (for example `sqlite::memory:`) is returned unchanged; any other input
+/// without `://` is replaced by `<redacted URL>`.
 ///
-/// Passwords are not always percent-encoded in practice (for example a
-/// generated secret interpolated into `postgresql://user:$(PASSWORD)@host`), so
-/// they may contain `/`, `?`, `#`, `:` or `@`. The userinfo is therefore taken
-/// to end at the **last** `@` after the scheme, not at the first `/`, `?` or
-/// `#`. This can over-mask a URL without credentials whose query contains both
-/// `:` and `@`, but it never reveals a password.
+/// Secrets are not always percent-encoded in practice (for example a
+/// generated secret interpolated into `postgresql://user:$(PASSWORD)@host` or
+/// `...?password=$(PASSWORD)`), so they may contain `/`, `?`, `#`, `&`, `:` or
+/// `@`. Redaction therefore works conservatively:
+///
+/// 1. The first credential query parameter (`password`, `sslpassword`,
+///    `pass`, `passwd`, `pwd`, `secret`, `token`; matched case-insensitively
+///    after `?` or `&`) is masked from its value up to the **end** of the URL,
+///    so an unencoded `&`, `#` or `@` in the value never shows.
+/// 2. In the part before it, the userinfo is taken to end at the **last**
+///    `@`, and everything after the first `:` of the userinfo is masked.
+/// 3. When the masked query value itself contains `@`, it is ambiguous
+///    whether that `@` ends a userinfo, so everything after the first `:`
+///    before the query parameter is masked too (this can hide a port).
+///
+/// This can over-mask, but it never reveals a password.
 #[must_use]
 pub fn redact_url(url: &str) -> String {
     const MASK: &str = "***";
 
     let Some(idx) = url.find("://") else {
+        if url.contains('@') || find_secret_param(url).is_some() {
+            return "<redacted URL>".to_string();
+        }
         return url.to_string();
     };
     let (scheme, rest) = (&url[..idx + 3], &url[idx + 3..]);
 
-    // Split off the userinfo at the last `@`. A password is everything after
-    // the first `:` of the userinfo.
-    let (userinfo, after_userinfo) = match rest.rfind('@') {
-        Some(at) => {
-            let (userinfo, host_and_tail) = rest.split_at(at);
-            let userinfo = match userinfo.find(':') {
-                Some(colon) => format!("{}:{MASK}", &userinfo[..colon]),
-                None => userinfo.to_string(),
-            };
-            (userinfo, host_and_tail)
-        }
-        None => (String::new(), rest),
+    // Step 1: mask the first credential query parameter up to the end.
+    let (prefix, secret_key, ambiguous) = match find_secret_param(rest) {
+        Some((start, value_start)) => (
+            &rest[..start],
+            Some(&rest[start..value_start]),
+            rest[value_start..].contains('@'),
+        ),
+        None => (rest, None, false),
     };
+    let masked_tail = secret_key.map_or_else(String::new, |key| format!("{key}{MASK}"));
 
-    let authority_end = after_userinfo
-        .find(['/', '?', '#'])
-        .unwrap_or(after_userinfo.len());
-    let (host, tail) = after_userinfo.split_at(authority_end);
+    // Step 3: the userinfo may extend into the masked value.
+    if ambiguous {
+        let kept = match prefix.find(':') {
+            Some(colon) => format!("{}:{MASK}", &prefix[..colon]),
+            None => prefix.to_string(),
+        };
+        return format!("{scheme}{kept}{masked_tail}");
+    }
 
-    format!("{scheme}{userinfo}{host}{}", redact_query(tail))
+    // Step 2: the userinfo ends at the last `@`; the password is everything
+    // after its first `:`.
+    let redacted_prefix = match prefix.rfind('@') {
+        Some(at) => {
+            let (userinfo, host_and_tail) = prefix.split_at(at);
+            match userinfo.find(':') {
+                Some(colon) => format!("{}:{MASK}{host_and_tail}", &userinfo[..colon]),
+                None => prefix.to_string(),
+            }
+        }
+        None => prefix.to_string(),
+    };
+    format!("{scheme}{redacted_prefix}{masked_tail}")
 }
 
-/// Masks the values of credential query parameters in a URL path/query/fragment.
-fn redact_query(tail: &str) -> String {
-    const MASK: &str = "***";
-    const SECRET_PARAMS: [&str; 3] = ["password", "sslpassword", "pass"];
+/// Finds the first credential query parameter in `s`.
+///
+/// Returns the byte index of the `?`/`&` that introduces it and the byte
+/// index where its value starts.
+fn find_secret_param(s: &str) -> Option<(usize, usize)> {
+    const SECRET_PARAMS: [&str; 7] = [
+        "password",
+        "sslpassword",
+        "pass",
+        "passwd",
+        "pwd",
+        "secret",
+        "token",
+    ];
 
-    let Some(q) = tail.find('?') else {
-        return tail.to_string();
-    };
-    let (path, query_and_fragment) = tail.split_at(q);
-    let query_and_fragment = &query_and_fragment[1..];
-    let (query, fragment) = match query_and_fragment.find('#') {
-        Some(h) => query_and_fragment.split_at(h),
-        None => (query_and_fragment, ""),
-    };
-    let query = query
-        .split('&')
-        .map(|pair| match pair.split_once('=') {
-            Some((key, _)) if SECRET_PARAMS.contains(&key.to_ascii_lowercase().as_str()) => {
-                format!("{key}={MASK}")
-            }
-            _ => pair.to_string(),
+    let bytes = s.as_bytes();
+    bytes.iter().enumerate().find_map(|(i, &b)| {
+        if b != b'?' && b != b'&' {
+            return None;
+        }
+        let after = &s[i + 1..];
+        SECRET_PARAMS.iter().find_map(|key| {
+            let candidate = after.get(..key.len() + 1)?;
+            let (name, eq) = candidate.split_at(key.len());
+            (eq == "=" && name.eq_ignore_ascii_case(key)).then_some((i, i + 1 + key.len() + 1))
         })
-        .collect::<Vec<_>>()
-        .join("&");
-    format!("{path}?{query}{fragment}")
+    })
 }
 
 /// Builds the error for a URL the driver could not parse.
@@ -337,7 +367,7 @@ mod tests {
     fn redact_url_masks_password_query_parameter() {
         assert_eq!(
             redact_url("postgres://localhost/db?user=a&password=secret&sslmode=require#x"),
-            "postgres://localhost/db?user=a&password=***&sslmode=require#x"
+            "postgres://localhost/db?user=a&password=***"
         );
     }
 
@@ -371,10 +401,97 @@ mod tests {
     fn redact_url_masks_unencoded_password_and_query_parameter_together() {
         assert_eq!(
             redact_url("postgres://u:p/w@db/x?sslmode=require&password=q#frag"),
-            "postgres://u:***@db/x?sslmode=require&password=***#frag"
+            "postgres://u:***@db/x?sslmode=require&password=***"
         );
     }
 
+    #[test]
+    fn redact_url_masks_query_password_containing_at_sign() {
+        let cases = [
+            (
+                "postgresql://ferrous@db/ferrous?password=pa@ss",
+                "postgresql://ferrous@db/ferrous?password=***",
+            ),
+            (
+                "postgresql://db/x?password=pa@ss&sslmode=require",
+                "postgresql://db/x?password=***",
+            ),
+            (
+                "postgresql://ferrous@db/ferrous?password=pa:ss@word",
+                "postgresql://ferrous@db/ferrous?password=***",
+            ),
+            (
+                "postgresql://ferrous@db:5432/ferrous?password=pa@ss",
+                "postgresql://ferrous@db:***?password=***",
+            ),
+            (
+                "postgresql://db/x?sslmode=require&SSLPassword=k@y",
+                "postgresql://db/x?sslmode=require&SSLPassword=***",
+            ),
+        ];
+        for (url, expected) in cases {
+            let redacted = redact_url(url);
+            assert_eq!(redacted, expected, "url {url:?}");
+            assert!(!redacted.contains("ss@"), "secret leaked: {redacted}");
+            assert!(!redacted.contains("@ss"), "secret leaked: {redacted}");
+            assert!(!redacted.contains("ss@word"), "secret leaked: {redacted}");
+        }
+    }
+
+    #[test]
+    fn redact_url_masks_query_secret_up_to_the_end_of_the_url() {
+        assert_eq!(
+            redact_url("postgresql://db/x?password=pa&ss&sslmode=require"),
+            "postgresql://db/x?password=***"
+        );
+        assert_eq!(
+            redact_url("postgresql://db/x?password=pa#ss"),
+            "postgresql://db/x?password=***"
+        );
+        assert_eq!(
+            redact_url("postgresql://db/x?sslmode=require&pass=a&b#c@d"),
+            "postgresql://db/x?sslmode=require&pass=***"
+        );
+    }
+
+    #[test]
+    fn redact_url_masks_userinfo_that_spans_a_query_like_password() {
+        // The real password is `a@b?password=c`; nothing of it may show.
+        let redacted = redact_url("postgresql://u:a@b?password=c@host/db");
+        assert_eq!(redacted, "postgresql://u:***?password=***");
+        let redacted = redact_url("postgresql://u:x?password=y@host/db");
+        assert_eq!(redacted, "postgresql://u:***?password=***");
+    }
+
+    #[test]
+    fn redact_url_without_scheme_separator_is_conservative() {
+        assert_eq!(redact_url("sqlite::memory:"), "sqlite::memory:");
+        assert_eq!(redact_url("user:secret@host/db"), "<redacted URL>");
+        assert_eq!(redact_url("host/db?password=secret"), "<redacted URL>");
+    }
+
+    #[tokio::test]
+    async fn connect_timeout_never_echoes_query_password_with_at_sign() {
+        let config = DatabaseConfig {
+            db_type: DatabaseType::Postgres,
+            url: "postgresql://ferrous@127.0.0.1:1/ferrous?password=pa@ss".to_string(),
+            max_connections: 1,
+            min_connections: 0,
+            connection_timeout: 1,
+            idle_timeout: 0,
+            max_lifetime: 0,
+            auto_migrate: false,
+        };
+        let err = connect(&config).await.unwrap_err();
+        assert!(
+            matches!(err, Error::Database(_) | Error::Timeout(_)),
+            "unexpected error: {err:?}"
+        );
+        let message = err.to_string();
+        assert!(!message.contains("pa@ss"), "password leaked: {message}");
+        assert!(!message.contains("@ss"), "password leaked: {message}");
+        assert!(message.contains("password=***"), "{message}");
+    }
     #[tokio::test]
     async fn connect_with_unparseable_url_never_echoes_password() {
         for password in ["pa/ss", "pa?ss", "pa#ss"] {
