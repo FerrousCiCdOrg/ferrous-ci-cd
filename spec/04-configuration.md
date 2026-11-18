@@ -32,7 +32,10 @@ database:
   type: "postgres"  # or "sqlite"
   url: "postgresql://user:password@localhost/ferrous_ci"
   max_connections: 10
+  min_connections: 0
   connection_timeout: 30
+  idle_timeout: 600
+  max_lifetime: 1800
   auto_migrate: true
 
 storage:
@@ -134,9 +137,19 @@ Database configuration.
 |------|-----|-----------|------|
 | `type` | string | `"sqlite"` | Database type (`postgres` or `sqlite`) |
 | `url` | string | `"sqlite://ferrous.db"` | Database connection URL |
-| `max_connections` | u32 | `10` | Maximum connections |
-| `connection_timeout` | u64 | `30` | Connection timeout (seconds) |
+| `max_connections` | u32 | `10` | Maximum connections in the pool (must be greater than 0) |
+| `min_connections` | u32 | `0` | Minimum idle connections the pool keeps open (must not exceed `max_connections`) |
+| `connection_timeout` | u64 | `30` | Timeout for establishing or acquiring a pooled connection (seconds, must be greater than 0) |
+| `idle_timeout` | u64 | `600` | Seconds an idle connection stays in the pool before it is closed (`0` disables) |
+| `max_lifetime` | u64 | `1800` | Maximum lifetime of a pooled connection (seconds, `0` disables) |
 | `auto_migrate` | bool | `true` | Auto migration |
+
+The URL scheme must match `type`: `postgres://` or `postgresql://` for
+PostgreSQL, `sqlite:` for SQLite. SQLite database files are created when
+missing. Connection errors and migration logs report the URL with the
+password and credential query parameters (such as `password` or
+`sslpassword`) redacted; a credential query value is masked up to the end of
+the URL.
 
 **PostgreSQL Connection URL Example**:
 ```
@@ -291,7 +304,7 @@ export FERROUS__SECURITY__JWT_SECRET="my-secret-key"
 Configuration validation is performed at startup. The following checks are executed:
 
 1. Whether server port is within valid range
-2. Whether database URL is not empty
+2. Whether database URL is not empty and its scheme matches the database type, and whether the pool settings are consistent (`max_connections > 0`, `min_connections <= max_connections`, `connection_timeout > 0`)
 3. Whether JWT secret is not default value (warning)
 4. Whether storage paths exist (created if they don't exist)
 

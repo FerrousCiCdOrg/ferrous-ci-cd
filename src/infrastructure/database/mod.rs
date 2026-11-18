@@ -1,3 +1,11 @@
-//! Database connection and migrations
+//! Database connection pool and migrations.
+//!
+//! [`connect`] builds a [`DatabasePool`] from [`crate::config::DatabaseConfig`],
+//! choosing PostgreSQL or SQLite from the configured database type.
+//! [`migrations`] applies the embedded schema migrations for either backend.
 
-// TODO: Implement database connection pool and migrations
+pub mod migrations;
+pub mod pool;
+
+pub use migrations::{run_migrations, MigrationReport};
+pub use pool::{connect, redact_url, DatabasePool};
